@@ -12,6 +12,13 @@ func ModelSupportsThinking(model string) bool {
 	if model == "" {
 		return false
 	}
+	// Fallback: allow explicit "thinking" model variants even when the model registry
+	// is missing metadata (common for dynamically discovered models).
+	// This prevents us from stripping thinkingConfig for known thinking-enabled aliases.
+	lowered := strings.ToLower(strings.TrimSpace(model))
+	if strings.HasSuffix(lowered, "-thinking") {
+		return true
+	}
 	if info := registry.GetGlobalRegistry().GetModelInfo(model); info != nil {
 		return info.Thinking != nil
 	}

@@ -185,6 +185,14 @@ func (m *AmpModule) OnConfigUpdated(cfg *config.Config) error {
 	oldSettings := m.lastConfig
 	m.configMu.RUnlock()
 
+	// If our secret source is cacheable, invalidate cache on config reload so changes
+	// (e.g., key rotation on disk) take effect immediately instead of waiting for TTL.
+	if m.enabled {
+		if inv, ok := m.secretSource.(interface{ InvalidateCache() }); ok {
+			inv.InvalidateCache()
+		}
+	}
+
 	if oldSettings != nil && oldSettings.RestrictManagementToLocalhost != newSettings.RestrictManagementToLocalhost {
 		m.setRestrictToLocalhost(newSettings.RestrictManagementToLocalhost)
 		if !newSettings.RestrictManagementToLocalhost {

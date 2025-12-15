@@ -17,7 +17,7 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-const geminiCLIClaudeThoughtSignature = "skip_thought_signature_validator"
+const geminiClaudeThoughtSignature = "skip_thought_signature_validator"
 
 // ConvertClaudeRequestToAntigravity parses and transforms a Claude Code API request into Gemini CLI API format.
 // It extracts the model name, system instruction, message contents, and tool declarations
@@ -40,6 +40,71 @@ const geminiCLIClaudeThoughtSignature = "skip_thought_signature_validator"
 func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ bool) []byte {
 	rawJSON := bytes.Clone(inputRawJSON)
 	rawJSON = bytes.Replace(rawJSON, []byte(`"url":{"type":"string","format":"uri",`), []byte(`"url":{"type":"string",`), -1)
+
+	// Determine whether the caller requested Anthropic-style thinking.
+	// We intentionally do not gate on registry metadata here:
+	// - Some upstreams enforce strict "thinking + tool_use" ordering when thinking is enabled.
+	// - Capability stripping is handled later by executor normalization (StripThinkingConfigIfUnsupported).
+	thinkingRequested := false
+	thinkingBudget := 0
+	if t := gjson.GetBytes(rawJSON, "thinking"); t.Exists() && t.IsObject() {
+		if t.Get("type").String() == "enabled" {
+			if b := t.Get("budget_tokens"); b.Exists() && b.Type == gjson.Number {
+				thinkingRequested = true
+				thinkingBudget = int(b.Int())
+			}
+		}
+	}
+
+	// Some upstream Claude implementations require that any assistant tool_use message in the
+	// request history begins with a thinking block containing a valid signature when thinking
+	// is enabled. If the client session history is missing those signatures (common after
+	// prior proxy/client bugs), enabling thinking will hard-fail with 400.
+	//
+	// We therefore only forward thinkingConfig when the request history appears compatible.
+	thinkingHistoryCompatible := true
+	if thinkingRequested {
+		messagesResult := gjson.GetBytes(rawJSON, "messages")
+		if messagesResult.IsArray() {
+			for _, msg := range messagesResult.Array() {
+				if msg.Get("role").String() != "assistant" {
+					continue
+				}
+				content := msg.Get("content")
+				if !content.IsArray() {
+					continue
+				}
+				contentArr := content.Array()
+				hasToolUse := false
+				for _, c := range contentArr {
+					if c.Get("type").String() == "tool_use" {
+						hasToolUse = true
+						break
+					}
+				}
+				if !hasToolUse {
+					continue
+				}
+				if len(contentArr) == 0 {
+					thinkingHistoryCompatible = false
+					break
+				}
+				firstType := contentArr[0].Get("type").String()
+				switch firstType {
+				case "thinking":
+					if sig := contentArr[0].Get("signature").String(); strings.TrimSpace(sig) == "" {
+						thinkingHistoryCompatible = false
+					}
+				default:
+					// Missing thinking/redacted_thinking prefix on a tool_use message.
+					thinkingHistoryCompatible = false
+				}
+				if !thinkingHistoryCompatible {
+					break
+				}
+			}
+		}
+	}
 
 	// system instruction
 	var systemInstruction *client.Content
@@ -86,30 +151,31 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 					if contentTypeResult.Type == gjson.String && contentTypeResult.String() == "thinking" {
 						prompt := contentResult.Get("thinking").String()
 						signatureResult := contentResult.Get("signature")
-						signature := geminiCLIClaudeThoughtSignature
-						if signatureResult.Exists() {
-							signature = signatureResult.String()
+						// Preserve thought signatures only when explicitly present. Injecting fake signatures
+						// can trigger upstream errors like "Corrupted thought signature.".
+						if signatureResult.Exists() && signatureResult.String() != "" {
+							if prompt == "" {
+								prompt = " "
+							}
+							clientContent.Parts = append(clientContent.Parts, client.Part{
+								Text:             prompt,
+								Thought:          true,
+								ThoughtSignature: signatureResult.String(),
+							})
 						}
-						clientContent.Parts = append(clientContent.Parts, client.Part{Text: prompt, Thought: true, ThoughtSignature: signature})
 					} else if contentTypeResult.Type == gjson.String && contentTypeResult.String() == "text" {
 						prompt := contentResult.Get("text").String()
 						clientContent.Parts = append(clientContent.Parts, client.Part{Text: prompt})
 					} else if contentTypeResult.Type == gjson.String && contentTypeResult.String() == "tool_use" {
 						functionName := contentResult.Get("name").String()
-						functionArgs := contentResult.Get("input").String()
+						functionArgs := contentResult.Get("input")
 						functionID := contentResult.Get("id").String()
 						var args map[string]any
-						if err := json.Unmarshal([]byte(functionArgs), &args); err == nil {
-							if strings.Contains(modelName, "claude") {
-								clientContent.Parts = append(clientContent.Parts, client.Part{
-									FunctionCall: &client.FunctionCall{ID: functionID, Name: functionName, Args: args},
-								})
-							} else {
-								clientContent.Parts = append(clientContent.Parts, client.Part{
-									FunctionCall:     &client.FunctionCall{ID: functionID, Name: functionName, Args: args},
-									ThoughtSignature: geminiCLIClaudeThoughtSignature,
-								})
-							}
+						if functionArgs.Exists() && functionArgs.IsObject() && json.Unmarshal([]byte(functionArgs.Raw), &args) == nil {
+							clientContent.Parts = append(clientContent.Parts, client.Part{
+								FunctionCall:     &client.FunctionCall{ID: functionID, Name: functionName, Args: args},
+								ThoughtSignature: geminiClaudeThoughtSignature,
+							})
 						}
 					} else if contentTypeResult.Type == gjson.String && contentTypeResult.String() == "tool_result" {
 						toolCallID := contentResult.Get("tool_use_id").String()
@@ -134,6 +200,7 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 						}
 					}
 				}
+
 				contents = append(contents, clientContent)
 			} else if contentsResult.Type == gjson.String {
 				prompt := contentsResult.String()
@@ -188,15 +255,11 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 		out, _ = sjson.SetRaw(out, "request.tools", string(b))
 	}
 
-	// Map Anthropic thinking -> Gemini thinkingBudget/include_thoughts when type==enabled
-	if t := gjson.GetBytes(rawJSON, "thinking"); t.Exists() && t.IsObject() && util.ModelSupportsThinking(modelName) {
-		if t.Get("type").String() == "enabled" {
-			if b := t.Get("budget_tokens"); b.Exists() && b.Type == gjson.Number {
-				budget := int(b.Int())
-				out, _ = sjson.Set(out, "request.generationConfig.thinkingConfig.thinkingBudget", budget)
-				out, _ = sjson.Set(out, "request.generationConfig.thinkingConfig.include_thoughts", true)
-			}
-		}
+	// Map Anthropic thinking -> Gemini thinkingBudget/include_thoughts when type==enabled.
+	// Only enable it when the request history contains valid tool-use thinking signatures.
+	if thinkingRequested && thinkingHistoryCompatible {
+		out, _ = sjson.Set(out, "request.generationConfig.thinkingConfig.thinkingBudget", thinkingBudget)
+		out, _ = sjson.Set(out, "request.generationConfig.thinkingConfig.include_thoughts", true)
 	}
 	if v := gjson.GetBytes(rawJSON, "temperature"); v.Exists() && v.Type == gjson.Number {
 		out, _ = sjson.Set(out, "request.generationConfig.temperature", v.Num)
