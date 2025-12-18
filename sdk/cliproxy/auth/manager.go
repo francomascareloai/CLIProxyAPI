@@ -247,7 +247,7 @@ func (m *Manager) Load(ctx context.Context) error {
 func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
-		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
+		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied", HTTPStatus: http.StatusBadRequest}
 	}
 	rotated := m.rotateProviders(req.Model, normalized)
 	defer m.advanceProviderCursor(req.Model, normalized)
@@ -278,7 +278,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 	if lastErr != nil {
 		return cliproxyexecutor.Response{}, lastErr
 	}
-	return cliproxyexecutor.Response{}, &Error{Code: "auth_not_found", Message: "no auth available"}
+	return cliproxyexecutor.Response{}, &Error{Code: "auth_not_found", Message: "no auth available", HTTPStatus: http.StatusServiceUnavailable}
 }
 
 // ExecuteCount performs a non-streaming execution using the configured selector and executor.
@@ -286,7 +286,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
-		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
+		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied", HTTPStatus: http.StatusBadRequest}
 	}
 	rotated := m.rotateProviders(req.Model, normalized)
 	defer m.advanceProviderCursor(req.Model, normalized)
@@ -317,7 +317,7 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 	if lastErr != nil {
 		return cliproxyexecutor.Response{}, lastErr
 	}
-	return cliproxyexecutor.Response{}, &Error{Code: "auth_not_found", Message: "no auth available"}
+	return cliproxyexecutor.Response{}, &Error{Code: "auth_not_found", Message: "no auth available", HTTPStatus: http.StatusServiceUnavailable}
 }
 
 // ExecuteStream performs a streaming execution using the configured selector and executor.
@@ -325,7 +325,7 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (<-chan cliproxyexecutor.StreamChunk, error) {
 	normalized := m.normalizeProviders(providers)
 	if len(normalized) == 0 {
-		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied"}
+		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied", HTTPStatus: http.StatusBadRequest}
 	}
 	rotated := m.rotateProviders(req.Model, normalized)
 	defer m.advanceProviderCursor(req.Model, normalized)
@@ -356,12 +356,12 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 	if lastErr != nil {
 		return nil, lastErr
 	}
-	return nil, &Error{Code: "auth_not_found", Message: "no auth available"}
+	return nil, &Error{Code: "auth_not_found", Message: "no auth available", HTTPStatus: http.StatusServiceUnavailable}
 }
 
 func (m *Manager) executeWithProvider(ctx context.Context, provider string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	if provider == "" {
-		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "provider identifier is empty"}
+		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "provider identifier is empty", HTTPStatus: http.StatusBadRequest}
 	}
 	tried := make(map[string]struct{})
 	var lastErr error
@@ -409,7 +409,7 @@ func (m *Manager) executeWithProvider(ctx context.Context, provider string, req 
 
 func (m *Manager) executeCountWithProvider(ctx context.Context, provider string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	if provider == "" {
-		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "provider identifier is empty"}
+		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "provider identifier is empty", HTTPStatus: http.StatusBadRequest}
 	}
 	tried := make(map[string]struct{})
 	var lastErr error
@@ -457,7 +457,7 @@ func (m *Manager) executeCountWithProvider(ctx context.Context, provider string,
 
 func (m *Manager) executeStreamWithProvider(ctx context.Context, provider string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (<-chan cliproxyexecutor.StreamChunk, error) {
 	if provider == "" {
-		return nil, &Error{Code: "provider_not_found", Message: "provider identifier is empty"}
+		return nil, &Error{Code: "provider_not_found", Message: "provider identifier is empty", HTTPStatus: http.StatusBadRequest}
 	}
 	tried := make(map[string]struct{})
 	var lastErr error

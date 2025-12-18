@@ -14,7 +14,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -116,12 +118,101 @@ func (h *ClaudeCodeAPIHandler) ClaudeCountTokens(c *gin.Context) {
 
 	resp, errMsg := h.ExecuteCountWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, alt)
 	if errMsg != nil {
-		h.WriteErrorResponse(c, errMsg)
-		cliCancel(errMsg.Error)
-		return
+		// Claude Code expects count_tokens to work; some backends (e.g. Antigravity/Cloud Code)
+		// do not support it and return 501/Not Implemented. In that case, fall back to a
+		// conservative local estimate to avoid blocking subagent orchestration.
+		if errMsg.StatusCode == http.StatusNotImplemented && isCountTokensUnsupported(errMsg.Error) {
+			est := estimateClaudeInputTokens(rawJSON)
+			resp = []byte(fmt.Sprintf(`{"input_tokens":%d}`, est))
+		} else {
+			h.WriteErrorResponse(c, errMsg)
+			cliCancel(errMsg.Error)
+			return
+		}
 	}
 	_, _ = c.Writer.Write(resp)
 	cliCancel()
+}
+
+func isCountTokensUnsupported(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "count tokens") && (strings.Contains(msg, "not supported") || strings.Contains(msg, "not implemented"))
+}
+
+// estimateClaudeInputTokens provides a conservative token estimate for Claude Code requests.
+// This is only used as a fallback when the upstream provider does not support /count_tokens.
+// Over-estimating is preferable to avoid overshooting context limits.
+func estimateClaudeInputTokens(rawJSON []byte) int64 {
+	// Count primarily user-visible text + include tool schemas if present.
+	chars := 0
+
+	if v := gjson.GetBytes(rawJSON, "system"); v.Exists() {
+		chars += estimateValueChars(v)
+	}
+	if v := gjson.GetBytes(rawJSON, "messages"); v.Exists() {
+		chars += estimateValueChars(v)
+	}
+	if v := gjson.GetBytes(rawJSON, "tools"); v.Exists() {
+		// Tools can be large; include their raw length to avoid underestimation.
+		chars += len(v.Raw)
+	}
+	if v := gjson.GetBytes(rawJSON, "tool_choice"); v.Exists() {
+		chars += len(v.Raw)
+	}
+	if v := gjson.GetBytes(rawJSON, "metadata"); v.Exists() {
+		chars += len(v.Raw)
+	}
+
+	// Add a small constant overhead for formatting and role markers.
+	chars += 400
+
+	// Conservative char->token conversion.
+	// Typical English is ~3-4 chars/token; we bias toward *more* tokens.
+	perToken := 3.2
+	tokens := int64(math.Ceil(float64(chars) / perToken))
+	if tokens < 1 {
+		return 1
+	}
+	return tokens
+}
+
+func estimateValueChars(v gjson.Result) int {
+	switch v.Type {
+	case gjson.String:
+		return len(v.String())
+	case gjson.Number, gjson.True, gjson.False, gjson.Null:
+		return len(v.Raw)
+	case gjson.JSON:
+		// JSON can be an array or object.
+		chars := 0
+		if v.IsArray() {
+			v.ForEach(func(_, item gjson.Result) bool {
+				chars += estimateValueChars(item)
+				// Special-case common Claude content blocks: {type:"text", text:"..."}
+				if item.Type == gjson.JSON {
+					if t := item.Get("text"); t.Exists() && t.Type == gjson.String {
+						chars += len(t.String())
+					}
+				}
+				return true
+			})
+			return chars
+		}
+		if v.IsObject() {
+			v.ForEach(func(_, item gjson.Result) bool {
+				chars += estimateValueChars(item)
+				return true
+			})
+			return chars
+		}
+		// Fallback: raw length
+		return len(v.Raw)
+	default:
+		return len(v.Raw)
+	}
 }
 
 // ClaudeModels handles the Claude models listing endpoint.

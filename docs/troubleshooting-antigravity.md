@@ -16,14 +16,34 @@ Root cause:
 
 What CLIProxyAPI now does:
 
-- **Request translation (Claude → Antigravity):** only forwards `thinkingConfig` when the request history appears compatible (i.e., assistant `tool_use` messages start with a `thinking.signature`). If history is not compatible, CLIProxyAPI suppresses thinking for that request to avoid hard 400s.
-- **Response translation (Antigravity → Claude):** preserves upstream `thoughtSignature` and ensures Claude Code receives `thinking` + `signature_delta` in the correct order (even when the provider sends a signature without any thought text).
+- **Request translation (Claude → Antigravity):**
+  - **Default (safe):** if *any* assistant `tool_use` exists in history, CLIProxyAPI **suppresses `thinkingConfig`** and **drops all Claude `thinking` blocks** from the outbound request to avoid upstream signed-thinking validation failures.
+  - **No tools:** if there is no `tool_use` in history, CLIProxyAPI forwards `thinkingConfig` (`thinkingBudget` + `include_thoughts`) normally.
+  - **Experimental override:** you can force thinking even with tool use by setting `CLIPROXY_ANTIGRAVITY_ALLOW_THINKING_WITH_TOOL_USE=1` (may reintroduce 400s depending on backend validation).
+- **Tool calls (Claude → Antigravity):** attaches a Gemini `thoughtSignature` to `functionCall` parts (required by some Gemini/Antigravity endpoints) using a sentinel value: `skip_thought_signature_validator`.
+- **Schema sanitization (tools):** removes Gemini-incompatible JSON-Schema keywords (e.g. `propertyNames`, `patternProperties`, `dependentSchemas`, ...) to avoid `400 INVALID_ARGUMENT`.
+- **Response translation (Antigravity → Claude):** converts Gemini `thought` text into Claude `thinking` blocks **without emitting a `signature` / `signature_delta`**, because Antigravity/Gemini `thoughtSignature` is not compatible with Anthropic signed-thinking and can break future requests if echoed back.
 - **Model support:** treats models ending in `-thinking` as thinking-capable even if registry metadata is missing.
 
 Operational guidance (max quality):
 
 - For maximum thinking quality, start a **fresh conversation** after upgrading. Old sessions with “signature-less tool_use history” will force thinking to be suppressed.
 - Ensure `max_tokens` is **greater than** your thinking budget (Claude requirement). If `budget_tokens` >= `max_tokens`, upstream may reject or effectively disable thinking.
+
+## Rollback / How to revert if the experimental override fails
+
+If you enabled `CLIPROXY_ANTIGRAVITY_ALLOW_THINKING_WITH_TOOL_USE=1` and you start seeing 400s again, revert to the stable mode by:
+
+1. Stop the running server process (find PID with `pgrep -af cli-proxy-api` and `kill <pid>`).
+2. Restart **without** the env var:
+
+```bash
+nohup ./cli-proxy-api -config "/home/franco/.cliproxy/config.yaml" > logs/server.out 2>&1 &
+```
+
+Notes:
+- Stable mode is the default; you only need to unset/remove the env var.
+- If you want to revert code changes locally (instead of toggling runtime behavior), you can `git restore CLIPROXY/CLIProxyAPI`.
 
 ## 400 invalid_request_error: tool_use without tool_result
 

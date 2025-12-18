@@ -1,5 +1,7 @@
 package auth
 
+import "net/http"
+
 // Error describes an authentication related failure in a provider agnostic format.
 type Error struct {
 	// Code is a short machine readable identifier.
@@ -28,5 +30,16 @@ func (e *Error) StatusCode() int {
 	if e == nil {
 		return 0
 	}
-	return e.HTTPStatus
+	if e.HTTPStatus > 0 {
+		return e.HTTPStatus
+	}
+	// Provide sensible defaults so internal auth/selection failures don't surface as 500s.
+	switch e.Code {
+	case "provider_not_found":
+		return http.StatusBadRequest
+	case "auth_not_found", "auth_unavailable":
+		return http.StatusServiceUnavailable
+	default:
+		return 0
+	}
 }

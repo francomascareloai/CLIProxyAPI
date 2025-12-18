@@ -115,7 +115,6 @@ func ConvertAntigravityResponseToClaude(_ context.Context, _ string, originalReq
 			partTextResult := partResult.Get("text")
 			functionCallResult := partResult.Get("functionCall")
 			isThought := partResult.Get("thought").Bool()
-			thoughtSignatureResult := partResult.Get("thoughtSignature")
 
 			ensureThinking := func() {
 				if params.ResponseType == 2 {
@@ -141,13 +140,6 @@ func ConvertAntigravityResponseToClaude(_ context.Context, _ string, originalReq
 				// Process thinking content (internal reasoning)
 				if isThought {
 					ensureThinking()
-					// If the provider sends the thought signature in the same part as text, emit it first.
-					if thoughtSignatureResult.Exists() && thoughtSignatureResult.String() != "" {
-						output = output + "event: content_block_delta\n"
-						data, _ := sjson.Set(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"signature_delta","signature":""}}`, params.ResponseIndex), "delta.signature", thoughtSignatureResult.String())
-						output = output + fmt.Sprintf("data: %s\n\n\n", data)
-						params.HasContent = true
-					}
 					if partTextResult.String() != "" {
 						output = output + "event: content_block_delta\n"
 						data, _ := sjson.Set(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"thinking_delta","thinking":""}}`, params.ResponseIndex), "delta.thinking", partTextResult.String())
@@ -192,14 +184,6 @@ func ConvertAntigravityResponseToClaude(_ context.Context, _ string, originalReq
 						}
 					}
 				}
-			} else if isThought && thoughtSignatureResult.Exists() && thoughtSignatureResult.String() != "" {
-				// Some providers send the thought signature in a part without any text.
-				// Ensure we still start a thinking block so the client can persist a valid thinking signature.
-				ensureThinking()
-				output = output + "event: content_block_delta\n"
-				data, _ := sjson.Set(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"signature_delta","signature":""}}`, params.ResponseIndex), "delta.signature", thoughtSignatureResult.String())
-				output = output + fmt.Sprintf("data: %s\n\n\n", data)
-				params.HasContent = true
 			} else if functionCallResult.Exists() {
 				// Handle function/tool calls from the AI model
 				// This processes tool usage requests and formats them for Claude Code API compatibility
@@ -376,7 +360,6 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 	var contentBlocks []interface{}
 	textBuilder := strings.Builder{}
 	thinkingBuilder := strings.Builder{}
-	thinkingSignature := ""
 	toolIDCounter := 0
 	hasToolCall := false
 
@@ -392,28 +375,21 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 	}
 
 	flushThinking := func() {
-		if thinkingBuilder.Len() == 0 && thinkingSignature == "" {
+		if thinkingBuilder.Len() == 0 {
 			return
 		}
 		block := map[string]interface{}{
 			"type":     "thinking",
 			"thinking": thinkingBuilder.String(),
 		}
-		if thinkingSignature != "" {
-			block["signature"] = thinkingSignature
-		}
 		contentBlocks = append(contentBlocks, block)
 		thinkingBuilder.Reset()
-		thinkingSignature = ""
 	}
 
 	if parts.IsArray() {
 		for _, part := range parts.Array() {
-			if part.Get("thought").Bool() {
-				if sig := part.Get("thoughtSignature"); sig.Exists() && sig.String() != "" {
-					thinkingSignature = sig.String()
-				}
-			}
+			// If `thoughtSignature` exists, ignore it. Antigravity's Gemini thoughtSignature is not
+			// compatible with Anthropic signed-thinking and should not be exposed to Claude clients.
 			if text := part.Get("text"); text.Exists() && text.String() != "" {
 				if part.Get("thought").Bool() {
 					flushText()

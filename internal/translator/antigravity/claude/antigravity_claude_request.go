@@ -8,6 +8,7 @@ package claude
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"strings"
 
 	client "github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
@@ -41,6 +42,8 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 	rawJSON := bytes.Clone(inputRawJSON)
 	rawJSON = bytes.Replace(rawJSON, []byte(`"url":{"type":"string","format":"uri",`), []byte(`"url":{"type":"string",`), -1)
 
+	allowThinkingWithToolUse := isTruthyEnv("CLIPROXY_ANTIGRAVITY_ALLOW_THINKING_WITH_TOOL_USE")
+
 	// Determine whether the caller requested Anthropic-style thinking.
 	// We intentionally do not gate on registry metadata here:
 	// - Some upstreams enforce strict "thinking + tool_use" ordering when thinking is enabled.
@@ -64,6 +67,7 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 	// We therefore only forward thinkingConfig when the request history appears compatible.
 	thinkingHistoryCompatible := true
 	if thinkingRequested {
+		hasAnyToolUse := false
 		messagesResult := gjson.GetBytes(rawJSON, "messages")
 		if messagesResult.IsArray() {
 			for _, msg := range messagesResult.Array() {
@@ -79,6 +83,7 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 				for _, c := range contentArr {
 					if c.Get("type").String() == "tool_use" {
 						hasToolUse = true
+						hasAnyToolUse = true
 						break
 					}
 				}
@@ -92,17 +97,34 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 				firstType := contentArr[0].Get("type").String()
 				switch firstType {
 				case "thinking":
-					if sig := contentArr[0].Get("signature").String(); strings.TrimSpace(sig) == "" {
-						thinkingHistoryCompatible = false
+					if !allowThinkingWithToolUse {
+						if sig := contentArr[0].Get("signature").String(); strings.TrimSpace(sig) == "" {
+							thinkingHistoryCompatible = false
+						}
 					}
+				case "redacted_thinking":
+					// OK: redacted thinking does not require a signature.
 				default:
 					// Missing thinking/redacted_thinking prefix on a tool_use message.
-					thinkingHistoryCompatible = false
+					if !allowThinkingWithToolUse {
+						thinkingHistoryCompatible = false
+					}
 				}
 				if !thinkingHistoryCompatible {
 					break
 				}
 			}
+		}
+		// Antigravity's Claude-on-Gemini backend returns a thoughtSignature that is NOT a valid
+		// Anthropic signed-thinking signature. When tool_use is involved, forwarding thinkingConfig
+		// can cause upstream strict signature validation to fail.
+		if hasAnyToolUse && !allowThinkingWithToolUse {
+			thinkingHistoryCompatible = false
+		}
+		if allowThinkingWithToolUse {
+			// Experimental mode: force-enable thinkingConfig even when tool_use exists in history.
+			// This may reintroduce upstream 400s depending on strict signed-thinking validation.
+			thinkingHistoryCompatible = true
 		}
 	}
 
@@ -149,20 +171,16 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 					contentResult := contentResults[j]
 					contentTypeResult := contentResult.Get("type")
 					if contentTypeResult.Type == gjson.String && contentTypeResult.String() == "thinking" {
-						prompt := contentResult.Get("thinking").String()
-						signatureResult := contentResult.Get("signature")
-						// Preserve thought signatures only when explicitly present. Injecting fake signatures
-						// can trigger upstream errors like "Corrupted thought signature.".
-						if signatureResult.Exists() && signatureResult.String() != "" {
-							if prompt == "" {
-								prompt = " "
+						// Default: do NOT forward Anthropic signed-thinking blocks to Antigravity.
+						// Experimental override: if enabled, forward thinking text as Gemini thought parts
+						// WITHOUT a thoughtSignature.
+						if allowThinkingWithToolUse && thinkingRequested {
+							prompt := contentResult.Get("thinking").String()
+							if strings.TrimSpace(prompt) != "" {
+								clientContent.Parts = append(clientContent.Parts, client.Part{Thought: true, Text: prompt})
 							}
-							clientContent.Parts = append(clientContent.Parts, client.Part{
-								Text:             prompt,
-								Thought:          true,
-								ThoughtSignature: signatureResult.String(),
-							})
 						}
+						continue
 					} else if contentTypeResult.Type == gjson.String && contentTypeResult.String() == "text" {
 						prompt := contentResult.Get("text").String()
 						clientContent.Parts = append(clientContent.Parts, client.Part{Text: prompt})
@@ -278,4 +296,13 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 	outBytes = common.AttachDefaultSafetySettings(outBytes, "request.safetySettings")
 
 	return outBytes
+}
+
+func isTruthyEnv(key string) bool {
+	val := strings.TrimSpace(os.Getenv(key))
+	if val == "" {
+		return false
+	}
+	val = strings.ToLower(val)
+	return val == "1" || val == "true" || val == "yes" || val == "y" || val == "on"
 }

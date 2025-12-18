@@ -103,7 +103,7 @@ func (s *RoundRobinSelector) Pick(ctx context.Context, provider, model string, o
 	_ = ctx
 	_ = opts
 	if len(auths) == 0 {
-		return nil, &Error{Code: "auth_not_found", Message: "no auth candidates"}
+		return nil, &Error{Code: "auth_not_found", Message: "no auth candidates", HTTPStatus: http.StatusServiceUnavailable}
 	}
 	if s.cursors == nil {
 		s.cursors = make(map[string]int)
@@ -127,14 +127,16 @@ func (s *RoundRobinSelector) Pick(ctx context.Context, provider, model string, o
 		}
 	}
 	if len(available) == 0 {
-		if cooldownCount == len(auths) && !earliest.IsZero() {
+		// If *any* credential is in a quota/cooldown window, surface that as a 429 with Retry-After
+		// even if other credentials are disabled/blocked for other reasons.
+		if cooldownCount > 0 && !earliest.IsZero() {
 			resetIn := earliest.Sub(now)
 			if resetIn < 0 {
 				resetIn = 0
 			}
 			return nil, newModelCooldownError(model, provider, resetIn)
 		}
-		return nil, &Error{Code: "auth_unavailable", Message: "no auth available"}
+		return nil, &Error{Code: "auth_unavailable", Message: "no auth available", HTTPStatus: http.StatusServiceUnavailable}
 	}
 	// Make round-robin deterministic even if caller's candidate order is unstable.
 	if len(available) > 1 {

@@ -42,9 +42,6 @@ func TestConvertAntigravityResponseToClaude_ThoughtSignatureStartsThinkingBlock(
 	if !strings.Contains(chunk, `"content_block_start"`) || !strings.Contains(chunk, `"type":"thinking"`) {
 		t.Fatalf("expected thinking block start in chunk, got: %s", chunk)
 	}
-	if !strings.Contains(chunk, `"signature_delta"`) || !strings.Contains(chunk, "sig_only_no_text") {
-		t.Fatalf("expected signature_delta for thoughtSignature in chunk, got: %s", chunk)
-	}
 	if !strings.Contains(chunk, `"thinking_delta"`) || !strings.Contains(chunk, "reasoning text") {
 		t.Fatalf("expected thinking_delta with text in chunk, got: %s", chunk)
 	}
@@ -78,7 +75,7 @@ func TestConvertAntigravityResponseToClaudeNonStream_ThinkingIncludesSignature(t
 }`)
 
 	out := ConvertAntigravityResponseToClaudeNonStream(context.Background(), "gemini-claude-opus-4-5-thinking", nil, nil, raw, nil)
-	if !strings.Contains(out, `"type":"thinking"`) || !strings.Contains(out, `"signature":"sig1"`) {
-		t.Fatalf("expected thinking block with signature, got: %s", out)
+	if !strings.Contains(out, `"type":"thinking"`) || !strings.Contains(out, `"thinking":"hidden"`) {
+		t.Fatalf("expected thinking block without signature, got: %s", out)
 	}
 }

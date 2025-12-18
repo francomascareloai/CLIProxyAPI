@@ -18,7 +18,14 @@ func SanitizeGeminiSchemaJSON(raw []byte) []byte {
 	if !bytes.Contains(raw, []byte(`"$ref"`)) &&
 		!bytes.Contains(raw, []byte(`"$defs"`)) &&
 		!bytes.Contains(raw, []byte(`"definitions"`)) &&
-		!bytes.Contains(raw, []byte(`"$schema"`)) {
+		!bytes.Contains(raw, []byte(`"$schema"`)) &&
+		!bytes.Contains(raw, []byte(`"propertyNames"`)) &&
+		!bytes.Contains(raw, []byte(`"patternProperties"`)) &&
+		!bytes.Contains(raw, []byte(`"unevaluatedProperties"`)) &&
+		!bytes.Contains(raw, []byte(`"dependentSchemas"`)) &&
+		!bytes.Contains(raw, []byte(`"dependentRequired"`)) &&
+		!bytes.Contains(raw, []byte(`"$id"`)) &&
+		!bytes.Contains(raw, []byte(`"title"`)) {
 		return raw
 	}
 
@@ -63,6 +70,13 @@ func sanitizeSchemaNode(node any, root any) any {
 		delete(v, "$schema")
 		delete(v, "$defs")
 		delete(v, "definitions")
+		delete(v, "$id")
+		delete(v, "title")
+		delete(v, "propertyNames")
+		delete(v, "patternProperties")
+		delete(v, "unevaluatedProperties")
+		delete(v, "dependentSchemas")
+		delete(v, "dependentRequired")
 
 		// Recurse through remaining keys.
 		for key, val := range v {
