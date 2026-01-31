@@ -653,12 +653,13 @@ func (s *Service) Shutdown(ctx context.Context) error {
 			}
 		}
 
+		internalusage.StopUsagePersister(ctx)
+		internalusage.Shutdown()
 		usage.StopDefault()
 		sdkusage := usage.DefaultManager()
 		if err := sdkusage.Wait(ctx); err != nil {
 			log.Warnf("usage: sdk manager shutdown wait failed: %v", err)
 		}
-		internalusage.StopUsagePersister(ctx)
 	})
 	return shutdownErr
 }

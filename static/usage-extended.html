@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CLI Proxy API - Extended Usage Dashboard</title>
+    <style>
+        :root {
+            --bg-primary: #0f0f23;
+            --bg-secondary: #1a1a2e;
+            --bg-card: #16213e;
+            --text-primary: #e0e0e0;
+            --text-secondary: #888;
+            --accent: #00d4ff;
+            --accent-green: #00ff88;
+            --accent-yellow: #ffd700;
+            --accent-red: #ff4757;
+            --border: #2a2a4a;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container { max-width: 1400px; margin: 0 auto; }
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid var(--border);
+        }
+        h1 { font-size: 24px; color: var(--accent); }
+        .header-actions { display: flex; gap: 10px; }
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        .btn-primary { background: var(--accent); color: #000; }
+        .btn-primary:hover { background: #00b8e0; }
+        .btn-secondary { background: var(--bg-card); color: var(--text-primary); border: 1px solid var(--border); }
+        .btn-secondary:hover { background: var(--bg-secondary); }
+        .btn-danger { background: var(--accent-red); color: #fff; }
+        .btn-danger:hover { background: #e0424f; }
+
+        .auth-section {
+            background: var(--bg-card);
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .auth-section input {
+            width: 300px;
+            padding: 10px;
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            margin-right: 10px;
+        }
+
+        .grid { display: grid; gap: 20px; }
+        .grid-2 { grid-template-columns: repeat(2, 1fr); }
+        @media (max-width: 1000px) { .grid-2 { grid-template-columns: 1fr; } }
+
+        .card {
+            background: var(--bg-card);
+            border-radius: 8px;
+            padding: 20px;
+            border: 1px solid var(--border);
+        }
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        .card-title { font-size: 18px; font-weight: 600; }
+
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid var(--border); }
+        th { color: var(--text-secondary); font-weight: 500; font-size: 13px; text-transform: uppercase; }
+        tr:hover { background: var(--bg-secondary); }
+
+        .status-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        .status-available { background: rgba(0, 255, 136, 0.2); color: var(--accent-green); }
+        .status-cooldown { background: rgba(255, 215, 0, 0.2); color: var(--accent-yellow); }
+        .status-quota { background: rgba(255, 71, 87, 0.2); color: var(--accent-red); }
+        .status-disabled { background: rgba(136, 136, 136, 0.2); color: var(--text-secondary); }
+
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: var(--bg-secondary);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent-green), var(--accent));
+            transition: width 0.3s;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        @media (max-width: 800px) { .stats-grid { grid-template-columns: repeat(2, 1fr); } }
+        .stat-box {
+            background: var(--bg-secondary);
+            padding: 15px;
+            border-radius: 6px;
+            text-align: center;
+        }
+        .stat-value { font-size: 28px; font-weight: 700; color: var(--accent); }
+        .stat-label { font-size: 12px; color: var(--text-secondary); margin-top: 5px; }
+
+        .message {
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 15px;
+        }
+        .message-success { background: rgba(0, 255, 136, 0.1); border: 1px solid var(--accent-green); }
+        .message-error { background: rgba(255, 71, 87, 0.1); border: 1px solid var(--accent-red); }
+
+        .loading { text-align: center; padding: 40px; color: var(--text-secondary); }
+        .spinner {
+            display: inline-block;
+            width: 30px;
+            height: 30px;
+            border: 3px solid var(--border);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .countdown { font-family: monospace; font-size: 13px; color: var(--accent-yellow); }
+
+        .back-link {
+            color: var(--accent);
+            text-decoration: none;
+            font-size: 14px;
+        }
+        .back-link:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div>
+                <h1>Extended Usage Dashboard</h1>
+                <a href="/management.html" class="back-link">&larr; Back to Management Center</a>
+            </div>
+            <div class="header-actions">
+                <button class="btn btn-secondary" onclick="refreshAll()">Refresh All</button>
+                <button class="btn btn-primary" onclick="downloadCSV()">Export CSV</button>
+            </div>
+        </header>
+
+        <div class="auth-section">
+            <label>Management Key: </label>
+            <input type="password" id="mgmtKey" placeholder="Enter management key..." onchange="saveKey()">
+            <button class="btn btn-secondary" onclick="testConnection()">Test Connection</button>
+            <span id="connectionStatus" style="margin-left: 15px;"></span>
+        </div>
+
+        <div id="message-container"></div>
+
+        <div class="stats-grid" id="summary-stats">
+            <div class="stat-box">
+                <div class="stat-value" id="total-accounts">-</div>
+                <div class="stat-label">Total Accounts</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-value" id="available-accounts">-</div>
+                <div class="stat-label">Available</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-value" id="cooldown-accounts">-</div>
+                <div class="stat-label">In Cooldown</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-value" id="quota-exceeded">-</div>
+                <div class="stat-label">Quota Exceeded</div>
+            </div>
+        </div>
+
+        <div class="grid grid-2">
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Rate Limit Status</span>
+                    <button class="btn btn-secondary" onclick="loadCooldownStatus()">Refresh</button>
+                </div>
+                <div id="cooldown-container">
+                    <div class="loading"><div class="spinner"></div><p>Loading...</p></div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Account Usage Leaderboard</span>
+                    <button class="btn btn-secondary" onclick="loadAccountStats()">Refresh</button>
+                </div>
+                <div id="accounts-container">
+                    <div class="loading"><div class="spinner"></div><p>Loading...</p></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card" style="margin-top: 20px;">
+            <div class="card-header">
+                <span class="card-title">Data Maintenance</span>
+            </div>
+            <p style="color: var(--text-secondary); margin-bottom: 15px;">
+                Compact old request details (older than 30 days) to reduce storage size while keeping aggregated statistics.
+            </p>
+            <button class="btn btn-danger" onclick="compactData()">Compact Old Data</button>
+            <span id="compact-result" style="margin-left: 15px;"></span>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = '/v0/management';
+
+        function getKey() {
+            return document.getElementById('mgmtKey').value || localStorage.getItem('mgmt_key') || '';
+        }
+
+        function saveKey() {
+            localStorage.setItem('mgmt_key', document.getElementById('mgmtKey').value);
+        }
+
+        function loadKey() {
+            const saved = localStorage.getItem('mgmt_key');
+            if (saved) document.getElementById('mgmtKey').value = saved;
+        }
+
+        async function apiCall(endpoint, options = {}) {
+            const key = getKey();
+            if (!key) {
+                showMessage('Please enter your management key', 'error');
+                throw new Error('No management key');
+            }
+
+            const headers = {
+                'X-Management-Key': key,
+                'Content-Type': 'application/json',
+                ...options.headers
+            };
+
+            const response = await fetch(`${API_BASE}${endpoint}`, { ...options, headers });
+
+            if (!response.ok) {
+                const text = await response.text();
+                throw new Error(`API Error ${response.status}: ${text}`);
+            }
+
+            if (endpoint.includes('.csv')) {
+                return response.blob();
+            }
+            return response.json();
+        }
+
+        function showMessage(text, type = 'success') {
+            const container = document.getElementById('message-container');
+            container.innerHTML = `<div class="message message-${type}">${text}</div>`;
+            setTimeout(() => container.innerHTML = '', 5000);
+        }
+
+        async function testConnection() {
+            const status = document.getElementById('connectionStatus');
+            try {
+                await apiCall('/usage');
+                status.innerHTML = '<span style="color: var(--accent-green);">Connected!</span>';
+            } catch (e) {
+                status.innerHTML = `<span style="color: var(--accent-red);">Error: ${e.message}</span>`;
+            }
+        }
+
+        function formatNumber(n) {
+            if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+            if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+            if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+            return n.toString();
+        }
+
+        function formatDuration(seconds) {
+            if (seconds < 60) return `${Math.round(seconds)}s`;
+            if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
+            return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+        }
+
+        async function loadCooldownStatus() {
+            const container = document.getElementById('cooldown-container');
+            try {
+                const data = await apiCall('/cooldown');
+
+                // Update summary stats
+                document.getElementById('total-accounts').textContent = data.total_accounts || 0;
+                document.getElementById('available-accounts').textContent = data.available || 0;
+                document.getElementById('cooldown-accounts').textContent = data.in_cooldown || 0;
+
+                const quotaExceeded = (data.accounts || []).filter(a => a.quota_exceeded).length;
+                document.getElementById('quota-exceeded').textContent = quotaExceeded;
+
+                if (!data.accounts || data.accounts.length === 0) {
+                    container.innerHTML = '<p style="color: var(--text-secondary);">No accounts found.</p>';
+                    return;
+                }
+
+                let html = '<table><thead><tr><th>Account</th><th>Provider</th><th>Status</th><th>Cooldown</th></tr></thead><tbody>';
+
+                for (const acc of data.accounts) {
+                    let statusClass = 'status-available';
+                    let statusText = 'Available';
+                    let cooldownText = '-';
+
+                    if (acc.disabled) {
+                        statusClass = 'status-disabled';
+                        statusText = 'Disabled';
+                    } else if (acc.quota_exceeded) {
+                        statusClass = 'status-quota';
+                        statusText = acc.quota_reason || 'Quota Exceeded';
+                    } else if (acc.cooldown_seconds > 0) {
+                        statusClass = 'status-cooldown';
+                        statusText = 'In Cooldown';
+                        cooldownText = `<span class="countdown">${formatDuration(acc.cooldown_seconds)}</span>`;
+                    }
+
+                    const label = acc.label || acc.id.substring(0, 12) + '...';
+
+                    html += `<tr>
+                        <td>${escapeHtml(label)}</td>
+                        <td>${escapeHtml(acc.provider || '-')}</td>
+                        <td><span class="status-badge ${statusClass}">${statusText}</span></td>
+                        <td>${cooldownText}</td>
+                    </tr>`;
+                }
+
+                html += '</tbody></table>';
+                container.innerHTML = html;
+
+            } catch (e) {
+                container.innerHTML = `<p style="color: var(--accent-red);">Error: ${e.message}</p>`;
+            }
+        }
+
+        async function loadAccountStats() {
+            const container = document.getElementById('accounts-container');
+            try {
+                const data = await apiCall('/usage/accounts');
+
+                if (!data.accounts || data.accounts.length === 0) {
+                    container.innerHTML = '<p style="color: var(--text-secondary);">No usage data available.</p>';
+                    return;
+                }
+
+                // Find max tokens for progress bar scaling
+                const maxTokens = Math.max(...data.accounts.map(a => a.total_tokens || 0));
+
+                let html = '<table><thead><tr><th>Account</th><th>Requests</th><th>Tokens</th><th>Success Rate</th><th>Usage</th></tr></thead><tbody>';
+
+                for (const acc of data.accounts) {
+                    const successRate = acc.total_requests > 0
+                        ? ((acc.success_count / acc.total_requests) * 100).toFixed(1)
+                        : '0.0';
+                    const progress = maxTokens > 0 ? ((acc.total_tokens || 0) / maxTokens) * 100 : 0;
+
+                    html += `<tr>
+                        <td>${escapeHtml(acc.source || 'Unknown')}</td>
+                        <td>${formatNumber(acc.total_requests || 0)}</td>
+                        <td>${formatNumber(acc.total_tokens || 0)}</td>
+                        <td>${successRate}%</td>
+                        <td style="width: 150px;">
+                            <div class="progress-bar">
+                                <div class="progress-fill" style="width: ${progress}%"></div>
+                            </div>
+                        </td>
+                    </tr>`;
+                }
+
+                html += '</tbody></table>';
+                container.innerHTML = html;
+
+            } catch (e) {
+                container.innerHTML = `<p style="color: var(--accent-red);">Error: ${e.message}</p>`;
+            }
+        }
+
+        async function downloadCSV() {
+            try {
+                const blob = await apiCall('/usage/export.csv');
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `usage_stats_${new Date().toISOString().split('T')[0]}.csv`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                showMessage('CSV exported successfully!');
+            } catch (e) {
+                showMessage(`Export failed: ${e.message}`, 'error');
+            }
+        }
+
+        async function compactData() {
+            const result = document.getElementById('compact-result');
+            if (!confirm('This will remove detailed request logs older than 30 days. Continue?')) {
+                return;
+            }
+
+            try {
+                const data = await apiCall('/usage/compact', { method: 'POST' });
+                result.innerHTML = `<span style="color: var(--accent-green);">${data.message || 'Compacted ' + data.removed + ' records'}</span>`;
+                showMessage(`Compaction complete: ${data.removed} old records removed`);
+            } catch (e) {
+                result.innerHTML = `<span style="color: var(--accent-red);">Error: ${e.message}</span>`;
+            }
+        }
+
+        function refreshAll() {
+            loadCooldownStatus();
+            loadAccountStats();
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            loadKey();
+            if (getKey()) {
+                refreshAll();
+            }
+        });
+
+        // Auto-refresh every 60 seconds
+        setInterval(() => {
+            if (getKey()) {
+                loadCooldownStatus();
+            }
+        }, 60000);
+    </script>
+</body>
+</html>

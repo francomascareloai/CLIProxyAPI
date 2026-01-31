@@ -110,10 +110,10 @@ func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 			}
 		}
 	}
-	// Only add system message if it has content
-	if hasSystemContent {
-		messagesJSON, _ = sjson.SetRaw(messagesJSON, "-1", systemMsgJSON)
-	}
+	// Always add a system message (even if empty). Tests and some downstream clients
+	// assume there is a system message at index 0.
+	_ = hasSystemContent
+	messagesJSON, _ = sjson.SetRaw(messagesJSON, "-1", systemMsgJSON)
 
 	// Process Anthropic messages
 	if messages := root.Get("messages"); messages.Exists() && messages.IsArray() {

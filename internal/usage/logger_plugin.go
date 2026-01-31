@@ -20,6 +20,13 @@ var statisticsEnabled atomic.Bool
 
 func init() {
 	statisticsEnabled.Store(true)
+	// Load persisted statistics from disk
+	if err := defaultRequestStatistics.Load(); err != nil {
+		// Log warning but continue - persistence errors shouldn't prevent startup
+		fmt.Printf("[usage] warning: failed to load persisted statistics: %v\n", err)
+	}
+	// Start auto-save goroutine
+	defaultRequestStatistics.StartAutoSave()
 	coreusage.RegisterPlugin(NewLoggerPlugin())
 }
 
@@ -56,6 +63,12 @@ func SetStatisticsEnabled(enabled bool) { statisticsEnabled.Store(enabled) }
 
 // StatisticsEnabled reports the current recording state.
 func StatisticsEnabled() bool { return statisticsEnabled.Load() }
+
+// Shutdown gracefully stops the usage statistics auto-save and performs a final save.
+// This should be called when the service is shutting down.
+func Shutdown() {
+	defaultRequestStatistics.StopAutoSave()
+}
 
 // RequestStatistics maintains aggregated request metrics in memory.
 type RequestStatistics struct {
