@@ -15,7 +15,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor"
-	internalUsage "github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	internalusage "github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/watcher"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/wsrelay"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
@@ -438,6 +438,7 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 
 	usage.StartDefault(ctx)
+	internalusage.StartUsagePersister(ctx)
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
@@ -682,8 +683,13 @@ func (s *Service) Shutdown(ctx context.Context) error {
 			}
 		}
 
-		internalUsage.Shutdown()
+		internalusage.Shutdown()
 		usage.StopDefault()
+		sdkusage := usage.DefaultManager()
+		if err := sdkusage.Wait(ctx); err != nil {
+			log.Warnf("usage: sdk manager shutdown wait failed: %v", err)
+		}
+		internalusage.StopUsagePersister(ctx)
 	})
 	return shutdownErr
 }

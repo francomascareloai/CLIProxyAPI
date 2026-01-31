@@ -6,6 +6,7 @@ package usage
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -71,7 +72,8 @@ func Shutdown() {
 
 // RequestStatistics maintains aggregated request metrics in memory.
 type RequestStatistics struct {
-	mu sync.RWMutex
+	mu    sync.RWMutex
+	dirty atomic.Bool
 
 	totalRequests int64
 	successCount  int64
@@ -93,11 +95,65 @@ type apiStats struct {
 	Models        map[string]*modelStats
 }
 
+// maxRequestDetailsPerModel bounds in-memory per-request detail retention per model.
+//
+// Rationale:
+// - Prevent accidental / malicious memory growth (DoS) when the usage endpoint is enabled.
+// - Keep endpoint payload shape compatible: Snapshot() still returns `details`, but truncated.
+// - Keep Record() fast: O(1) per record after the slice reaches the cap.
+const maxRequestDetailsPerModel = 256
+
 // modelStats holds aggregated metrics for a specific model within an API.
 type modelStats struct {
 	TotalRequests int64
 	TotalTokens   int64
-	Details       []RequestDetail
+
+	// details is a fixed-size ring buffer (once full) holding the most recent request details.
+	// The ring order is tracked via detailsNext.
+	details     []RequestDetail
+	detailsNext int
+}
+
+func newModelStats() *modelStats {
+	return &modelStats{}
+}
+
+func (m *modelStats) appendDetail(detail RequestDetail) {
+	if m == nil || maxRequestDetailsPerModel <= 0 {
+		return
+	}
+	if m.details == nil {
+		m.details = make([]RequestDetail, 0, maxRequestDetailsPerModel)
+		m.detailsNext = 0
+	}
+
+	if len(m.details) < maxRequestDetailsPerModel {
+		m.details = append(m.details, detail)
+		return
+	}
+	// Safety clamp: should not happen, but prevents unbounded growth if state is corrupted.
+	if len(m.details) > maxRequestDetailsPerModel {
+		m.details = append(m.details[:0], m.details[len(m.details)-maxRequestDetailsPerModel:]...)
+		m.detailsNext = 0
+	}
+
+	m.details[m.detailsNext] = detail
+	m.detailsNext++
+	if m.detailsNext >= maxRequestDetailsPerModel {
+		m.detailsNext = 0
+	}
+}
+
+// orderedDetailSegments returns two underlying slices that represent the details in
+// chronological order (oldest->newest). The caller must not mutate the returned slices.
+func (m *modelStats) orderedDetailSegments() ([]RequestDetail, []RequestDetail) {
+	if m == nil || len(m.details) == 0 {
+		return nil, nil
+	}
+	if len(m.details) < maxRequestDetailsPerModel || m.detailsNext == 0 {
+		return m.details, nil
+	}
+	return m.details[m.detailsNext:], m.details[:m.detailsNext]
 }
 
 // RequestDetail stores the timestamp and token usage for a single request.
@@ -107,6 +163,23 @@ type RequestDetail struct {
 	AuthIndex string     `json:"auth_index"`
 	Tokens    TokenStats `json:"tokens"`
 	Failed    bool       `json:"failed"`
+}
+
+func sanitiseDetailSource(source string) string {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return ""
+	}
+	if strings.HasPrefix(source, "api:hmac256:") {
+		return source
+	}
+	if strings.Contains(source, "@") {
+		return source
+	}
+	if shouldHashAPIKeyCandidate(source) {
+		return HashClientKey(source)
+	}
+	return source
 }
 
 // TokenStats captures the token usage breakdown for a request.
@@ -163,6 +236,20 @@ func NewRequestStatistics() *RequestStatistics {
 	}
 }
 
+func (s *RequestStatistics) IsDirty() bool {
+	if s == nil {
+		return false
+	}
+	return s.dirty.Load()
+}
+
+func (s *RequestStatistics) ClearDirty() {
+	if s == nil {
+		return
+	}
+	s.dirty.Store(false)
+}
+
 // Record ingests a new usage record and updates the aggregates.
 func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record) {
 	if s == nil {
@@ -177,7 +264,10 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 	}
 	detail := normaliseDetail(record.Detail)
 	totalTokens := detail.TotalTokens
-	statsKey := record.APIKey
+	statsKey := ""
+	if record.APIKey != "" {
+		statsKey = HashClientKey(record.APIKey)
+	}
 	if statsKey == "" {
 		statsKey = resolveAPIIdentifier(ctx, record)
 	}
@@ -196,6 +286,8 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.dirty.Store(true)
+
 	s.totalRequests++
 	if success {
 		s.successCount++
@@ -211,7 +303,7 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 	}
 	s.updateAPIStats(stats, modelName, RequestDetail{
 		Timestamp: timestamp,
-		Source:    record.Source,
+		Source:    sanitiseDetailSource(record.Source),
 		AuthIndex: record.AuthIndex,
 		Tokens:    detail,
 		Failed:    failed,
@@ -228,12 +320,12 @@ func (s *RequestStatistics) updateAPIStats(stats *apiStats, model string, detail
 	stats.TotalTokens += detail.Tokens.TotalTokens
 	modelStatsValue, ok := stats.Models[model]
 	if !ok {
-		modelStatsValue = &modelStats{}
+		modelStatsValue = newModelStats()
 		stats.Models[model] = modelStatsValue
 	}
 	modelStatsValue.TotalRequests++
 	modelStatsValue.TotalTokens += detail.Tokens.TotalTokens
-	modelStatsValue.Details = append(modelStatsValue.Details, detail)
+	modelStatsValue.appendDetail(detail)
 }
 
 // Snapshot returns a copy of the aggregated metrics for external consumption.
@@ -259,8 +351,11 @@ func (s *RequestStatistics) Snapshot() StatisticsSnapshot {
 			Models:        make(map[string]ModelSnapshot, len(stats.Models)),
 		}
 		for modelName, modelStatsValue := range stats.Models {
-			requestDetails := make([]RequestDetail, len(modelStatsValue.Details))
-			copy(requestDetails, modelStatsValue.Details)
+			segA, segB := modelStatsValue.orderedDetailSegments()
+			totalDetails := len(segA) + len(segB)
+			requestDetails := make([]RequestDetail, totalDetails)
+			copy(requestDetails, segA)
+			copy(requestDetails[len(segA):], segB)
 			apiSnapshot.Models[modelName] = ModelSnapshot{
 				TotalRequests: modelStatsValue.TotalRequests,
 				TotalTokens:   modelStatsValue.TotalTokens,
@@ -295,6 +390,189 @@ func (s *RequestStatistics) Snapshot() StatisticsSnapshot {
 	return result
 }
 
+// SnapshotAggregated returns a snapshot suitable for persistence. It purposely excludes
+// per-request details and any plaintext API keys.
+func (s *RequestStatistics) SnapshotAggregated() AggregatedStatisticsSnapshot {
+	result := AggregatedStatisticsSnapshot{}
+	if s == nil {
+		return result
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	result.TotalRequests = s.totalRequests
+	result.SuccessCount = s.successCount
+	result.FailureCount = s.failureCount
+	result.TotalTokens = s.totalTokens
+
+	result.APIs = make(map[string]AggregatedAPISnapshot, len(s.apis))
+	for apiName, stats := range s.apis {
+		apiSnapshot := AggregatedAPISnapshot{
+			TotalRequests: stats.TotalRequests,
+			TotalTokens:   stats.TotalTokens,
+			Models:        make(map[string]AggregatedModelSnapshot, len(stats.Models)),
+		}
+		for modelName, modelStatsValue := range stats.Models {
+			apiSnapshot.Models[modelName] = AggregatedModelSnapshot{
+				TotalRequests: modelStatsValue.TotalRequests,
+				TotalTokens:   modelStatsValue.TotalTokens,
+			}
+		}
+		result.APIs[apiName] = apiSnapshot
+	}
+
+	result.RequestsByDay = make(map[string]int64, len(s.requestsByDay))
+	for k, v := range s.requestsByDay {
+		result.RequestsByDay[k] = v
+	}
+
+	result.RequestsByHour = make(map[string]int64, len(s.requestsByHour))
+	for hour, v := range s.requestsByHour {
+		result.RequestsByHour[formatHour(hour)] = v
+	}
+
+	result.TokensByDay = make(map[string]int64, len(s.tokensByDay))
+	for k, v := range s.tokensByDay {
+		result.TokensByDay[k] = v
+	}
+
+	result.TokensByHour = make(map[string]int64, len(s.tokensByHour))
+	for hour, v := range s.tokensByHour {
+		result.TokensByHour[formatHour(hour)] = v
+	}
+
+	return result
+}
+
+// ApplyAggregatedSnapshot merges a persisted aggregated snapshot into the current store.
+// It marks the store dirty because applying persisted state changes totals.
+func (s *RequestStatistics) ApplyAggregatedSnapshot(snapshot AggregatedStatisticsSnapshot) {
+	if s == nil {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.dirty.Store(true)
+
+	s.totalRequests += snapshot.TotalRequests
+	s.successCount += snapshot.SuccessCount
+	s.failureCount += snapshot.FailureCount
+	s.totalTokens += snapshot.TotalTokens
+
+	if s.apis == nil {
+		s.apis = make(map[string]*apiStats)
+	}
+	for apiName, apiSnapshot := range snapshot.APIs {
+		apiName = strings.TrimSpace(apiName)
+		if apiName == "" {
+			continue
+		}
+		if !strings.HasPrefix(apiName, "api:hmac256:") && shouldHashAPIKeyCandidate(apiName) {
+			apiName = HashClientKey(apiName)
+		}
+		stats, ok := s.apis[apiName]
+		if !ok || stats == nil {
+			stats = &apiStats{Models: make(map[string]*modelStats)}
+			s.apis[apiName] = stats
+		} else if stats.Models == nil {
+			stats.Models = make(map[string]*modelStats)
+		}
+		stats.TotalRequests += apiSnapshot.TotalRequests
+		stats.TotalTokens += apiSnapshot.TotalTokens
+		for modelName, modelSnapshot := range apiSnapshot.Models {
+			modelName = strings.TrimSpace(modelName)
+			if modelName == "" {
+				modelName = "unknown"
+			}
+			modelStatsValue, ok := stats.Models[modelName]
+			if !ok || modelStatsValue == nil {
+				modelStatsValue = newModelStats()
+				stats.Models[modelName] = modelStatsValue
+			}
+			modelStatsValue.TotalRequests += modelSnapshot.TotalRequests
+			modelStatsValue.TotalTokens += modelSnapshot.TotalTokens
+		}
+	}
+
+	if s.requestsByDay == nil {
+		s.requestsByDay = make(map[string]int64)
+	}
+	for k, v := range snapshot.RequestsByDay {
+		k = strings.TrimSpace(k)
+		if k == "" {
+			continue
+		}
+		s.requestsByDay[k] += v
+	}
+
+	if s.requestsByHour == nil {
+		s.requestsByHour = make(map[int]int64)
+	}
+	for hourKey, v := range snapshot.RequestsByHour {
+		hourInt, err := strconv.Atoi(strings.TrimSpace(hourKey))
+		if err != nil {
+			continue
+		}
+		if hourInt < 0 || hourInt > 23 {
+			continue
+		}
+		s.requestsByHour[hourInt] += v
+	}
+
+	if s.tokensByDay == nil {
+		s.tokensByDay = make(map[string]int64)
+	}
+	for k, v := range snapshot.TokensByDay {
+		k = strings.TrimSpace(k)
+		if k == "" {
+			continue
+		}
+		s.tokensByDay[k] += v
+	}
+
+	if s.tokensByHour == nil {
+		s.tokensByHour = make(map[int]int64)
+	}
+	for hourKey, v := range snapshot.TokensByHour {
+		hourInt, err := strconv.Atoi(strings.TrimSpace(hourKey))
+		if err != nil {
+			continue
+		}
+		if hourInt < 0 || hourInt > 23 {
+			continue
+		}
+		s.tokensByHour[hourInt] += v
+	}
+}
+
+type AggregatedStatisticsSnapshot struct {
+	TotalRequests int64 `json:"total_requests"`
+	SuccessCount  int64 `json:"success_count"`
+	FailureCount  int64 `json:"failure_count"`
+	TotalTokens   int64 `json:"total_tokens"`
+
+	APIs map[string]AggregatedAPISnapshot `json:"apis"`
+
+	RequestsByDay  map[string]int64 `json:"requests_by_day"`
+	RequestsByHour map[string]int64 `json:"requests_by_hour"`
+	TokensByDay    map[string]int64 `json:"tokens_by_day"`
+	TokensByHour   map[string]int64 `json:"tokens_by_hour"`
+}
+
+type AggregatedAPISnapshot struct {
+	TotalRequests int64                              `json:"total_requests"`
+	TotalTokens   int64                              `json:"total_tokens"`
+	Models        map[string]AggregatedModelSnapshot `json:"models"`
+}
+
+type AggregatedModelSnapshot struct {
+	TotalRequests int64 `json:"total_requests"`
+	TotalTokens   int64 `json:"total_tokens"`
+}
+
 type MergeResult struct {
 	Added   int64 `json:"added"`
 	Skipped int64 `json:"skipped"`
@@ -320,7 +598,11 @@ func (s *RequestStatistics) MergeSnapshot(snapshot StatisticsSnapshot) MergeResu
 			if modelStatsValue == nil {
 				continue
 			}
-			for _, detail := range modelStatsValue.Details {
+			segA, segB := modelStatsValue.orderedDetailSegments()
+			for _, detail := range segA {
+				seen[dedupKey(apiName, modelName, detail)] = struct{}{}
+			}
+			for _, detail := range segB {
 				seen[dedupKey(apiName, modelName, detail)] = struct{}{}
 			}
 		}
@@ -330,6 +612,9 @@ func (s *RequestStatistics) MergeSnapshot(snapshot StatisticsSnapshot) MergeResu
 		apiName = strings.TrimSpace(apiName)
 		if apiName == "" {
 			continue
+		}
+		if !strings.HasPrefix(apiName, "api:hmac256:") && shouldHashAPIKeyCandidate(apiName) {
+			apiName = HashClientKey(apiName)
 		}
 		stats, ok := s.apis[apiName]
 		if !ok || stats == nil {
@@ -364,10 +649,13 @@ func (s *RequestStatistics) MergeSnapshot(snapshot StatisticsSnapshot) MergeResu
 }
 
 func (s *RequestStatistics) recordImported(apiName, modelName string, stats *apiStats, detail RequestDetail) {
+	detail.Source = sanitiseDetailSource(detail.Source)
 	totalTokens := detail.Tokens.TotalTokens
 	if totalTokens < 0 {
 		totalTokens = 0
 	}
+
+	s.dirty.Store(true)
 
 	s.totalRequests++
 	if detail.Failed {
