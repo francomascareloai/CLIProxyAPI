@@ -13,6 +13,9 @@ conv/*
 temp/*
 refs/*
 
+# Local run artifacts
+cliproxyapi.run.log
+
 # Storage backends
 pgstore/*
 gitstore/*
