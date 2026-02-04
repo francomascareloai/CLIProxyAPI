@@ -70,17 +70,17 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 	case auth.Metadata != nil:
 		auth.Metadata["disabled"] = auth.Disabled
 		raw, errMarshal := json.Marshal(auth.Metadata)
-		if errMarshal != nil {
-			return "", fmt.Errorf("auth filestore: marshal metadata failed: %w", errMarshal)
-		}
-		if existing, errRead := os.ReadFile(path); errRead == nil {
-			if jsonEqual(existing, raw) {
-				return path, nil
+			if errMarshal != nil {
+				return "", fmt.Errorf("auth filestore: marshal metadata failed: %w", errMarshal)
 			}
-			file, errOpen := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0o600)
-			if errOpen != nil {
-				return "", fmt.Errorf("auth filestore: open existing failed: %w", errOpen)
-			}
+			if existing, errRead := os.ReadFile(path); errRead == nil {
+				if metadataEqualIgnoringTimestamps(existing, raw, strings.ToLower(auth.Provider)) {
+					return path, nil
+				}
+				file, errOpen := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0o600)
+				if errOpen != nil {
+					return "", fmt.Errorf("auth filestore: open existing failed: %w", errOpen)
+				}
 			if _, errWrite := file.Write(raw); errWrite != nil {
 				_ = file.Close()
 				return "", fmt.Errorf("auth filestore: write existing failed: %w", errWrite)
@@ -317,6 +317,40 @@ func jsonEqual(a, b []byte) bool {
 	return deepEqualJSON(objA, objB)
 }
 
+// metadataEqualIgnoringTimestamps compares two metadata JSON blobs,
+// ignoring fields that change on every refresh but don't affect functionality.
+// This prevents unnecessary file writes that would trigger watcher events and
+// create refresh loops.
+// The provider parameter controls whether access_token is ignored: providers like
+// Google OAuth (gemini, gemini-cli) can re-fetch tokens when needed, while others
+// like iFlow require the refreshed token to be persisted.
+func metadataEqualIgnoringTimestamps(a, b []byte, provider string) bool {
+	var objA, objB map[string]any
+	if err := json.Unmarshal(a, &objA); err != nil {
+		return false
+	}
+	if err := json.Unmarshal(b, &objB); err != nil {
+		return false
+	}
+
+	// Fields to ignore: these change on every refresh but don't affect authentication logic.
+	// - timestamp, expired, expires_in, last_refresh: time-related fields that change on refresh
+	ignoredFields := []string{"timestamp", "expired", "expires_in", "last_refresh"}
+
+	// For providers that can re-fetch tokens when needed (e.g., Google OAuth),
+	// we ignore access_token to avoid unnecessary file writes.
+	switch provider {
+	case "gemini", "gemini-cli", "antigravity", "codex":
+		ignoredFields = append(ignoredFields, "access_token")
+	}
+
+	for _, field := range ignoredFields {
+		delete(objA, field)
+		delete(objB, field)
+	}
+
+	return deepEqualJSON(objA, objB)
+}
 func deepEqualJSON(a, b any) bool {
 	switch valA := a.(type) {
 	case map[string]any:
