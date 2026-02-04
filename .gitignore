@@ -11,11 +11,18 @@ bin/*
 logs/*
 conv/*
 temp/*
+refs/*
+
+# Local run artifacts
+cliproxyapi.run.log
+
+# Storage backends
 pgstore/*
 gitstore/*
 objectstore/*
+
+# Static assets
 static/*
-refs/*
 
 # Authentication data
 auths/*
@@ -29,12 +36,17 @@ GEMINI.md
 
 # Tooling metadata
 .vscode/*
+.codex/*
 .claude/*
 .gemini/*
 .serena/*
 .agent/*
+.agents/*
+.agents/*
+.opencode/*
 .bmad/*
 _bmad/*
+_bmad-output/*
 
 # macOS
 .DS_Store

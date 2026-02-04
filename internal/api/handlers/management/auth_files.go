@@ -3,6 +3,8 @@ package management
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -427,7 +429,50 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 			log.WithError(err).Warnf("failed to stat auth file %s", path)
 		}
 	}
+	if claims := extractCodexIDTokenClaims(auth); claims != nil {
+		entry["id_token"] = claims
+	}
 	return entry
+}
+
+func extractCodexIDTokenClaims(auth *coreauth.Auth) gin.H {
+	if auth == nil || auth.Metadata == nil {
+		return nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
+		return nil
+	}
+	idTokenRaw, ok := auth.Metadata["id_token"].(string)
+	if !ok {
+		return nil
+	}
+	idToken := strings.TrimSpace(idTokenRaw)
+	if idToken == "" {
+		return nil
+	}
+	claims, err := codex.ParseJWTToken(idToken)
+	if err != nil || claims == nil {
+		return nil
+	}
+
+	result := gin.H{}
+	if v := strings.TrimSpace(claims.CodexAuthInfo.ChatgptAccountID); v != "" {
+		result["chatgpt_account_id"] = v
+	}
+	if v := strings.TrimSpace(claims.CodexAuthInfo.ChatgptPlanType); v != "" {
+		result["plan_type"] = v
+	}
+	if v := claims.CodexAuthInfo.ChatgptSubscriptionActiveStart; v != nil {
+		result["chatgpt_subscription_active_start"] = v
+	}
+	if v := claims.CodexAuthInfo.ChatgptSubscriptionActiveUntil; v != nil {
+		result["chatgpt_subscription_active_until"] = v
+	}
+
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }
 
 func authEmail(auth *coreauth.Auth) string {
@@ -702,6 +747,72 @@ func (h *Handler) registerAuthFromFile(ctx context.Context, path string, data []
 	}
 	_, err := h.authManager.Register(ctx, auth)
 	return err
+}
+
+// PatchAuthFileStatus toggles the disabled state of an auth file
+func (h *Handler) PatchAuthFileStatus(c *gin.Context) {
+	if h.authManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
+		return
+	}
+
+	var req struct {
+		Name     string `json:"name"`
+		Disabled *bool  `json:"disabled"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+		return
+	}
+	if req.Disabled == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "disabled is required"})
+		return
+	}
+
+	ctx := c.Request.Context()
+
+	// Find auth by name or ID
+	var targetAuth *coreauth.Auth
+	if auth, ok := h.authManager.GetByID(name); ok {
+		targetAuth = auth
+	} else {
+		auths := h.authManager.List()
+		for _, auth := range auths {
+			if auth.FileName == name {
+				targetAuth = auth
+				break
+			}
+		}
+	}
+
+	if targetAuth == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "auth file not found"})
+		return
+	}
+
+	// Update disabled state
+	targetAuth.Disabled = *req.Disabled
+	if *req.Disabled {
+		targetAuth.Status = coreauth.StatusDisabled
+		targetAuth.StatusMessage = "disabled via management API"
+	} else {
+		targetAuth.Status = coreauth.StatusActive
+		targetAuth.StatusMessage = ""
+	}
+	targetAuth.UpdatedAt = time.Now()
+
+	if _, err := h.authManager.Update(ctx, targetAuth); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update auth: %v", err)})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "disabled": *req.Disabled})
 }
 
 func (h *Handler) disableAuth(ctx context.Context, id string) {
@@ -1340,9 +1451,16 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 		claims, _ := codex.ParseJWTToken(tokenResp.IDToken)
 		email := ""
 		accountID := ""
+		planType := ""
 		if claims != nil {
 			email = claims.GetUserEmail()
 			accountID = claims.GetAccountID()
+			planType = strings.TrimSpace(claims.CodexAuthInfo.ChatgptPlanType)
+		}
+		hashAccountID := ""
+		if accountID != "" {
+			digest := sha256.Sum256([]byte(accountID))
+			hashAccountID = hex.EncodeToString(digest[:])[:8]
 		}
 		// Build bundle compatible with existing storage
 		bundle := &codex.CodexAuthBundle{
@@ -1359,10 +1477,11 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 
 		// Create token storage and persist
 		tokenStorage := openaiAuth.CreateTokenStorage(bundle)
+		fileName := codex.CredentialFileName(tokenStorage.Email, planType, hashAccountID, true)
 		record := &coreauth.Auth{
-			ID:       fmt.Sprintf("codex-%s.json", tokenStorage.Email),
+			ID:       fileName,
 			Provider: "codex",
-			FileName: fmt.Sprintf("codex-%s.json", tokenStorage.Email),
+			FileName: fileName,
 			Storage:  tokenStorage,
 			Metadata: map[string]any{
 				"email":      tokenStorage.Email,
@@ -1660,7 +1779,7 @@ func (h *Handler) RequestQwenToken(c *gin.Context) {
 		// Create token storage
 		tokenStorage := qwenAuth.CreateTokenStorage(tokenData)
 
-		tokenStorage.Email = fmt.Sprintf("qwen-%d", time.Now().UnixMilli())
+		tokenStorage.Email = fmt.Sprintf("%d", time.Now().UnixMilli())
 		record := &coreauth.Auth{
 			ID:       fmt.Sprintf("qwen-%s.json", tokenStorage.Email),
 			Provider: "qwen",
@@ -1765,7 +1884,7 @@ func (h *Handler) RequestIFlowToken(c *gin.Context) {
 		tokenStorage := authSvc.CreateTokenStorage(tokenData)
 		identifier := strings.TrimSpace(tokenStorage.Email)
 		if identifier == "" {
-			identifier = fmt.Sprintf("iflow-%d", time.Now().UnixMilli())
+			identifier = fmt.Sprintf("%d", time.Now().UnixMilli())
 			tokenStorage.Email = identifier
 		}
 		record := &coreauth.Auth{
@@ -1850,15 +1969,17 @@ func (h *Handler) RequestIFlowCookieToken(c *gin.Context) {
 	fileName := iflowauth.SanitizeIFlowFileName(email)
 	if fileName == "" {
 		fileName = fmt.Sprintf("iflow-%d", time.Now().UnixMilli())
+	} else {
+		fileName = fmt.Sprintf("iflow-%s", fileName)
 	}
 
 	tokenStorage.Email = email
 	timestamp := time.Now().Unix()
 
 	record := &coreauth.Auth{
-		ID:       fmt.Sprintf("iflow-%s-%d.json", fileName, timestamp),
+		ID:       fmt.Sprintf("%s-%d.json", fileName, timestamp),
 		Provider: "iflow",
-		FileName: fmt.Sprintf("iflow-%s-%d.json", fileName, timestamp),
+		FileName: fmt.Sprintf("%s-%d.json", fileName, timestamp),
 		Storage:  tokenStorage,
 		Metadata: map[string]any{
 			"email":        email,
@@ -2065,7 +2186,20 @@ func performGeminiCLISetup(ctx context.Context, httpClient *http.Client, storage
 			finalProjectID := projectID
 			if responseProjectID != "" {
 				if explicitProject && !strings.EqualFold(responseProjectID, projectID) {
-					log.Warnf("Gemini onboarding returned project %s instead of requested %s; keeping requested project ID.", responseProjectID, projectID)
+					// Check if this is a free user (gen-lang-client projects or free/legacy tier)
+					isFreeUser := strings.HasPrefix(projectID, "gen-lang-client-") ||
+						strings.EqualFold(tierID, "FREE") ||
+						strings.EqualFold(tierID, "LEGACY")
+
+					if isFreeUser {
+						// For free users, use backend project ID for preview model access
+						log.Infof("Gemini onboarding: frontend project %s maps to backend project %s", projectID, responseProjectID)
+						log.Infof("Using backend project ID: %s (recommended for preview model access)", responseProjectID)
+						finalProjectID = responseProjectID
+					} else {
+						// Pro users: keep requested project ID (original behavior)
+						log.Warnf("Gemini onboarding returned project %s instead of requested %s; keeping requested project ID.", responseProjectID, projectID)
+					}
 				} else {
 					finalProjectID = responseProjectID
 				}

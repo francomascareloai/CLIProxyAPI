@@ -15,17 +15,17 @@ import (
 
 // persistedData represents the JSON structure for saving/loading statistics.
 type persistedData struct {
-	Version        int                       `json:"version"`
-	SavedAt        time.Time                 `json:"saved_at"`
-	TotalRequests  int64                     `json:"total_requests"`
-	SuccessCount   int64                     `json:"success_count"`
-	FailureCount   int64                     `json:"failure_count"`
-	TotalTokens    int64                     `json:"total_tokens"`
-	APIs           map[string]*persistedAPI  `json:"apis"`
-	RequestsByDay  map[string]int64          `json:"requests_by_day"`
-	RequestsByHour map[int]int64             `json:"requests_by_hour"`
-	TokensByDay    map[string]int64          `json:"tokens_by_day"`
-	TokensByHour   map[int]int64             `json:"tokens_by_hour"`
+	Version        int                      `json:"version"`
+	SavedAt        time.Time                `json:"saved_at"`
+	TotalRequests  int64                    `json:"total_requests"`
+	SuccessCount   int64                    `json:"success_count"`
+	FailureCount   int64                    `json:"failure_count"`
+	TotalTokens    int64                    `json:"total_tokens"`
+	APIs           map[string]*persistedAPI `json:"apis"`
+	RequestsByDay  map[string]int64         `json:"requests_by_day"`
+	RequestsByHour map[int]int64            `json:"requests_by_hour"`
+	TokensByDay    map[string]int64         `json:"tokens_by_day"`
+	TokensByHour   map[int]int64            `json:"tokens_by_hour"`
 }
 
 type persistedAPI struct {
@@ -107,8 +107,10 @@ func (s *RequestStatistics) Save() error {
 			Models:        make(map[string]*persistedModel, len(stats.Models)),
 		}
 		for modelName, modelStatsValue := range stats.Models {
-			details := make([]RequestDetail, len(modelStatsValue.Details))
-			copy(details, modelStatsValue.Details)
+			segA, segB := modelStatsValue.orderedDetailSegments()
+			details := make([]RequestDetail, len(segA)+len(segB))
+			copy(details, segA)
+			copy(details[len(segA):], segB)
 			pAPI.Models[modelName] = &persistedModel{
 				TotalRequests: modelStatsValue.TotalRequests,
 				TotalTokens:   modelStatsValue.TotalTokens,
@@ -204,10 +206,14 @@ func (s *RequestStatistics) Load() error {
 		for modelName, pModel := range pAPI.Models {
 			details := make([]RequestDetail, len(pModel.Details))
 			copy(details, pModel.Details)
+			if maxRequestDetailsPerModel > 0 && len(details) > maxRequestDetailsPerModel {
+				details = append([]RequestDetail(nil), details[len(details)-maxRequestDetailsPerModel:]...)
+			}
 			stats.Models[modelName] = &modelStats{
 				TotalRequests: pModel.TotalRequests,
 				TotalTokens:   pModel.TotalTokens,
-				Details:       details,
+				details:       details,
+				detailsNext:   0,
 			}
 		}
 		s.apis[apiName] = stats
@@ -309,21 +315,34 @@ func (s *RequestStatistics) CompactOldDetails() (removedCount int) {
 	defer s.mu.Unlock()
 
 	for _, apiStats := range s.apis {
-		for _, modelStats := range apiStats.Models {
-			if len(modelStats.Details) == 0 {
+		for _, modelStatsValue := range apiStats.Models {
+			if modelStatsValue == nil {
+				continue
+			}
+			segA, segB := modelStatsValue.orderedDetailSegments()
+			if len(segA)+len(segB) == 0 {
 				continue
 			}
 
 			// Keep only details newer than cutoff
-			kept := make([]RequestDetail, 0, len(modelStats.Details))
-			for _, detail := range modelStats.Details {
+			kept := make([]RequestDetail, 0, len(segA)+len(segB))
+			for _, detail := range segA {
 				if detail.Timestamp.After(cutoff) {
 					kept = append(kept, detail)
 				} else {
 					removedCount++
 				}
 			}
-			modelStats.Details = kept
+			for _, detail := range segB {
+				if detail.Timestamp.After(cutoff) {
+					kept = append(kept, detail)
+				} else {
+					removedCount++
+				}
+			}
+
+			modelStatsValue.details = kept
+			modelStatsValue.detailsNext = 0
 		}
 	}
 
@@ -358,8 +377,37 @@ func (s *RequestStatistics) GetAccountStats() []AccountStats {
 	accountMap := make(map[string]*AccountStats)
 
 	for _, apiStats := range s.apis {
-		for _, modelStats := range apiStats.Models {
-			for _, detail := range modelStats.Details {
+		for _, modelStatsValue := range apiStats.Models {
+			if modelStatsValue == nil {
+				continue
+			}
+			segA, segB := modelStatsValue.orderedDetailSegments()
+			for _, detail := range segA {
+				source := detail.Source
+				if source == "" {
+					source = "unknown"
+				}
+
+				stats, ok := accountMap[source]
+				if !ok {
+					stats = &AccountStats{Source: source}
+					accountMap[source] = stats
+				}
+
+				stats.TotalRequests++
+				stats.TotalTokens += detail.Tokens.TotalTokens
+				stats.InputTokens += detail.Tokens.InputTokens
+				stats.OutputTokens += detail.Tokens.OutputTokens
+				if detail.Failed {
+					stats.FailureCount++
+				} else {
+					stats.SuccessCount++
+				}
+				if detail.Timestamp.After(stats.LastUsed) {
+					stats.LastUsed = detail.Timestamp
+				}
+			}
+			for _, detail := range segB {
 				source := detail.Source
 				if source == "" {
 					source = "unknown"

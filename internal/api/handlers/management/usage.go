@@ -1,7 +1,9 @@
 package management
 
 import (
+	"bytes"
 	"encoding/csv"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
@@ -9,6 +11,17 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 )
+
+type usageExportPayload struct {
+	Version    int                      `json:"version"`
+	ExportedAt time.Time                `json:"exported_at"`
+	Usage      usage.StatisticsSnapshot `json:"usage"`
+}
+
+type usageImportPayload struct {
+	Version int                      `json:"version"`
+	Usage   usage.StatisticsSnapshot `json:"usage"`
+}
 
 // GetUsageStatistics returns the in-memory request statistics snapshot.
 func (h *Handler) GetUsageStatistics(c *gin.Context) {
@@ -22,6 +35,52 @@ func (h *Handler) GetUsageStatistics(c *gin.Context) {
 	})
 }
 
+// ExportUsageStatistics returns a complete usage snapshot for backup/migration.
+func (h *Handler) ExportUsageStatistics(c *gin.Context) {
+	var snapshot usage.StatisticsSnapshot
+	if h != nil && h.usageStats != nil {
+		snapshot = h.usageStats.Snapshot()
+	}
+	c.JSON(http.StatusOK, usageExportPayload{
+		Version:    1,
+		ExportedAt: time.Now().UTC(),
+		Usage:      snapshot,
+	})
+}
+
+// ImportUsageStatistics merges a previously exported usage snapshot into memory.
+func (h *Handler) ImportUsageStatistics(c *gin.Context) {
+	if h == nil || h.usageStats == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "usage statistics unavailable"})
+		return
+	}
+
+	data, err := c.GetRawData()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read request body"})
+		return
+	}
+
+	var payload usageImportPayload
+	if err := json.Unmarshal(data, &payload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json"})
+		return
+	}
+	if payload.Version != 0 && payload.Version != 1 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported version"})
+		return
+	}
+
+	result := h.usageStats.MergeSnapshot(payload.Usage)
+	snapshot := h.usageStats.Snapshot()
+	c.JSON(http.StatusOK, gin.H{
+		"added":           result.Added,
+		"skipped":         result.Skipped,
+		"total_requests":  snapshot.TotalRequests,
+		"failed_requests": snapshot.FailureCount,
+	})
+}
+
 // GetAccountStats returns aggregated statistics per account/email.
 func (h *Handler) GetAccountStats(c *gin.Context) {
 	if h == nil || h.usageStats == nil {
@@ -30,7 +89,7 @@ func (h *Handler) GetAccountStats(c *gin.Context) {
 	}
 	accounts := h.usageStats.GetAccountStats()
 	c.JSON(http.StatusOK, gin.H{
-		"accounts":      accounts,
+		"accounts":       accounts,
 		"total_accounts": len(accounts),
 	})
 }
@@ -65,14 +124,11 @@ func (h *Handler) ExportUsageCSV(c *gin.Context) {
 
 	accounts := h.usageStats.GetAccountStats()
 
-	c.Header("Content-Type", "text/csv")
-	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=usage_stats_%s.csv", time.Now().Format("2006-01-02")))
-
-	writer := csv.NewWriter(c.Writer)
-	defer writer.Flush()
+	var buf bytes.Buffer
+	writer := csv.NewWriter(&buf)
 
 	// Header
-	writer.Write([]string{
+	if err := writer.Write([]string{
 		"Account/Email",
 		"Total Requests",
 		"Success Count",
@@ -81,11 +137,14 @@ func (h *Handler) ExportUsageCSV(c *gin.Context) {
 		"Input Tokens",
 		"Output Tokens",
 		"Last Used",
-	})
+	}); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to write csv header"})
+		return
+	}
 
 	// Data rows
 	for _, acc := range accounts {
-		writer.Write([]string{
+		if err := writer.Write([]string{
 			acc.Source,
 			fmt.Sprintf("%d", acc.TotalRequests),
 			fmt.Sprintf("%d", acc.SuccessCount),
@@ -94,8 +153,21 @@ func (h *Handler) ExportUsageCSV(c *gin.Context) {
 			fmt.Sprintf("%d", acc.InputTokens),
 			fmt.Sprintf("%d", acc.OutputTokens),
 			acc.LastUsed.Format(time.RFC3339),
-		})
+		}); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to write csv row"})
+			return
+		}
 	}
+
+	writer.Flush()
+	if err := writer.Error(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to flush csv"})
+		return
+	}
+
+	c.Header("Content-Type", "text/csv")
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=usage_stats_%s.csv", time.Now().UTC().Format("2006-01-02")))
+	c.Data(http.StatusOK, "text/csv", buf.Bytes())
 }
 
 // GetCooldownStatus returns the rate limiting status for all auth credentials.
@@ -112,7 +184,7 @@ func (h *Handler) GetCooldownStatus(c *gin.Context) {
 	}
 
 	auths := h.authManager.List()
-	now := time.Now()
+	now := time.Now().UTC()
 
 	type accountCooldown struct {
 		ID              string    `json:"id"`

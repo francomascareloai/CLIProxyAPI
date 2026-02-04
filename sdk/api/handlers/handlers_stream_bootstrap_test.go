@@ -56,6 +56,14 @@ func (e *failOnceStreamExecutor) CountTokens(context.Context, *coreauth.Auth, co
 	return coreexecutor.Response{}, &coreauth.Error{Code: "not_implemented", Message: "CountTokens not implemented"}
 }
 
+func (e *failOnceStreamExecutor) HttpRequest(ctx context.Context, auth *coreauth.Auth, req *http.Request) (*http.Response, error) {
+	return nil, &coreauth.Error{
+		Code:       "not_implemented",
+		Message:    "HttpRequest not implemented",
+		HTTPStatus: http.StatusNotImplemented,
+	}
+}
+
 func (e *failOnceStreamExecutor) Calls() int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -94,12 +102,11 @@ func TestExecuteStreamWithAuthManager_RetriesBeforeFirstByte(t *testing.T) {
 		registry.GetGlobalRegistry().UnregisterClient(auth2.ID)
 	})
 
-	bootstrapRetries := 1
 	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{
 		Streaming: sdkconfig.StreamingConfig{
-			BootstrapRetries: &bootstrapRetries,
+			BootstrapRetries: 1,
 		},
-	}, manager, nil)
+	}, manager)
 	dataChan, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai", "test-model", []byte(`{"model":"test-model"}`), "")
 	if dataChan == nil || errChan == nil {
 		t.Fatalf("expected non-nil channels")

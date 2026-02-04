@@ -114,8 +114,39 @@ CLI wrapper for instant switching between multiple Claude accounts and alternati
 
 Native macOS GUI for managing CLIProxyAPI: configure providers, model mappings, and endpoints via OAuth - no API keys needed.
 
+### [Quotio](https://github.com/nguyenphutrong/quotio)
+
+Native macOS menu bar app that unifies Claude, Gemini, OpenAI, Qwen, and Antigravity subscriptions with real-time quota tracking and smart auto-failover for AI coding tools like Claude Code, OpenCode, and Droid - no API keys needed.
+
+### [CodMate](https://github.com/loocor/CodMate)
+
+Native macOS SwiftUI app for managing CLI AI sessions (Codex, Claude Code, Gemini CLI) with unified provider management, Git review, project organization, global search, and terminal integration. Integrates CLIProxyAPI to provide OAuth authentication for Codex, Claude, Gemini, Antigravity, and Qwen Code, with built-in and third-party provider rerouting through a single proxy endpoint - no API keys needed for OAuth providers.
+
+### [ProxyPilot](https://github.com/Finesssee/ProxyPilot)
+
+Windows-native CLIProxyAPI fork with TUI, system tray, and multi-provider OAuth for AI coding tools - no API keys needed.
+
+### [Claude Proxy VSCode](https://github.com/uzhao/claude-proxy-vscode)
+
+VSCode extension for quick switching between Claude Code models, featuring integrated CLIProxyAPI as its backend with automatic background lifecycle management.
+
+### [ZeroLimit](https://github.com/0xtbug/zero-limit)
+
+Windows desktop app built with Tauri + React for monitoring AI coding assistant quotas via CLIProxyAPI. Track usage across Gemini, Claude, OpenAI Codex, and Antigravity accounts with real-time dashboard, system tray integration, and one-click proxy control - no API keys needed.
+
 > [!NOTE]  
 > If you developed a project based on CLIProxyAPI, please open a PR to add it to this list.
+
+## More choices
+
+Those projects are ports of CLIProxyAPI or inspired by it:
+
+### [9Router](https://github.com/decolua/9router)
+
+A Next.js implementation inspired by CLIProxyAPI, easy to install and use, built from scratch with format translation (OpenAI/Claude/Gemini/Ollama), combo system with auto-fallback, multi-account management with exponential backoff, a Next.js web dashboard, and support for CLI tools (Cursor, Claude Code, Cline, RooCode) - no API keys needed.
+
+> [!NOTE]  
+> If you have developed a port of CLIProxyAPI or a project inspired by it, please open a PR to add it to this list.
 
 ## License
 

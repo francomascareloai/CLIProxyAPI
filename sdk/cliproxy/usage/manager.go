@@ -3,6 +3,7 @@ package usage
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -14,7 +15,7 @@ type Record struct {
 	Model       string
 	APIKey      string
 	AuthID      string
-	AuthIndex   uint64
+	AuthIndex   string
 	Source      string
 	RequestedAt time.Time
 	Failed      bool
@@ -49,15 +50,19 @@ type Manager struct {
 	mu     sync.Mutex
 	cond   *sync.Cond
 	queue  []queueItem
+	maxLen int
 	closed bool
+	done   chan struct{}
 
 	pluginsMu sync.RWMutex
 	plugins   []Plugin
+
+	dropLoggedAt int64
 }
 
 // NewManager constructs a manager with a buffered queue.
 func NewManager(buffer int) *Manager {
-	m := &Manager{}
+	m := &Manager{maxLen: buffer}
 	m.cond = sync.NewCond(&m.mu)
 	return m
 }
@@ -73,7 +78,16 @@ func (m *Manager) Start(ctx context.Context) {
 		}
 		var workerCtx context.Context
 		workerCtx, m.cancel = context.WithCancel(ctx)
+		m.mu.Lock()
+		m.done = make(chan struct{})
+		m.mu.Unlock()
 		go m.run(workerCtx)
+
+		// Ensure ctx cancellation triggers Stop(), so Wait(ctx) can observe progress.
+		go func() {
+			<-workerCtx.Done()
+			m.Stop()
+		}()
 	})
 }
 
@@ -91,6 +105,31 @@ func (m *Manager) Stop() {
 		m.mu.Unlock()
 		m.cond.Broadcast()
 	})
+}
+
+// Wait blocks until the dispatcher exits, or the context is done.
+//
+// This is useful when callers must ensure the queue has been fully drained.
+func (m *Manager) Wait(ctx context.Context) error {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	done := m.done
+	m.mu.Unlock()
+	if done == nil {
+		return nil
+	}
+	if ctx == nil {
+		<-done
+		return nil
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Register appends a plugin to the delivery list.
@@ -111,9 +150,16 @@ func (m *Manager) Publish(ctx context.Context, record Record) {
 	}
 	// ensure worker is running even if Start was not called explicitly
 	m.Start(context.Background())
+
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
+		return
+	}
+	// Buffer is a hard cap: when full, drop (do not block requests).
+	if m.maxLen > 0 && len(m.queue) >= m.maxLen {
+		m.mu.Unlock()
+		m.logDropRateLimited()
 		return
 	}
 	m.queue = append(m.queue, queueItem{ctx: ctx, record: record})
@@ -122,6 +168,16 @@ func (m *Manager) Publish(ctx context.Context, record Record) {
 }
 
 func (m *Manager) run(ctx context.Context) {
+	defer func() {
+		m.mu.Lock()
+		done := m.done
+		m.done = nil
+		m.mu.Unlock()
+		if done != nil {
+			close(done)
+		}
+	}()
+
 	for {
 		m.mu.Lock()
 		for !m.closed && len(m.queue) == 0 {
@@ -152,6 +208,20 @@ func (m *Manager) dispatch(item queueItem) {
 		}
 		safeInvoke(plugin, item.ctx, item.record)
 	}
+}
+
+func (m *Manager) logDropRateLimited() {
+	// Rate-limit warnings to avoid log spam on sustained backpressure.
+	const minInterval = int64(30) // seconds
+	now := time.Now().Unix()
+	prev := atomic.LoadInt64(&m.dropLoggedAt)
+	if prev != 0 && now-prev < minInterval {
+		return
+	}
+	if !atomic.CompareAndSwapInt64(&m.dropLoggedAt, prev, now) {
+		return
+	}
+	log.Warnf("usage: dropping usage record (queue full)")
 }
 
 func safeInvoke(plugin Plugin, ctx context.Context, record Record) {
