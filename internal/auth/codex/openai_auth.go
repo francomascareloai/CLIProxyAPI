@@ -265,12 +265,25 @@ func (o *CodexAuth) RefreshTokensWithRetry(ctx context.Context, refreshToken str
 		if err == nil {
 			return tokenData, nil
 		}
+		if isRefreshTokenReusedError(err) {
+			// Stop retrying: refresh-token rotation/single-use semantics make this non-recoverable
+			// without a fresh login.
+			return nil, err
+		}
 
 		lastErr = err
 		log.Warnf("Token refresh attempt %d failed: %v", attempt+1, err)
 	}
 
 	return nil, fmt.Errorf("token refresh failed after %d attempts: %w", maxRetries, lastErr)
+}
+
+func isRefreshTokenReusedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "refresh_token_reused") || strings.Contains(msg, "token_reused") || strings.Contains(msg, "token has already been used")
 }
 
 // UpdateTokenStorage updates an existing CodexTokenStorage with new token data.

@@ -3,16 +3,21 @@ package auth
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 
 	"github.com/google/uuid"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
@@ -52,6 +57,16 @@ const (
 	refreshFailureBackoff = 5 * time.Minute
 	quotaBackoffBase      = time.Second
 	quotaBackoffMax       = 30 * time.Minute
+
+	// deactivatedWorkspaceBackoff is a long quarantine window used when the upstream
+	// explicitly indicates the credential's workspace is deactivated.
+	deactivatedWorkspaceBackoff = 30 * 24 * time.Hour
+
+	// refreshTokenReusedBackoff is a long quarantine window used when an OAuth refresh
+	// fails with refresh_token_reused (requires re-login).
+	refreshTokenReusedBackoff = 30 * 24 * time.Hour
+
+	refreshLockStaleAfter = 10 * time.Minute
 )
 
 var quotaCooldownDisabled atomic.Bool
@@ -114,6 +129,9 @@ type Manager struct {
 	auths     map[string]*Auth
 	// providerOffsets tracks per-model provider rotation state for multi-provider routing.
 	providerOffsets map[string]int
+
+	// refreshSF deduplicates concurrent refresh attempts per auth (single-flight).
+	refreshSF singleflight.Group
 
 	// Retry controls request retry behavior.
 	requestRetry     atomic.Int32
@@ -606,6 +624,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			if errors.As(errExec, &se) && se != nil {
 				result.Error.HTTPStatus = se.StatusCode()
 			}
+			result.Error.Code = extractErrorCode(errExec)
 			if ra := retryAfterFromError(errExec); ra != nil {
 				result.RetryAfter = ra
 			}
@@ -659,6 +678,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			if errors.As(errExec, &se) && se != nil {
 				result.Error.HTTPStatus = se.StatusCode()
 			}
+			result.Error.Code = extractErrorCode(errExec)
 			if ra := retryAfterFromError(errExec); ra != nil {
 				result.RetryAfter = ra
 			}
@@ -711,6 +731,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			if errors.As(errStream, &se) && se != nil {
 				rerr.HTTPStatus = se.StatusCode()
 			}
+			rerr.Code = extractErrorCode(errStream)
 			result := Result{AuthID: auth.ID, Provider: provider, Model: routeModel, Success: false, Error: rerr}
 			result.RetryAfter = retryAfterFromError(errStream)
 			m.MarkResult(execCtx, result)
@@ -729,6 +750,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 					if errors.As(chunk.Err, &se) && se != nil {
 						rerr.HTTPStatus = se.StatusCode()
 					}
+					rerr.Code = extractErrorCode(chunk.Err)
 					m.MarkResult(streamCtx, Result{AuthID: streamAuth.ID, Provider: streamProvider, Model: routeModel, Success: false, Error: rerr})
 				}
 				out <- chunk
@@ -1153,59 +1175,70 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					auth.StatusMessage = result.Error.Message
 				}
 
-				statusCode := statusCodeFromResult(result.Error)
-				switch statusCode {
-				case 401:
-					next := now.Add(30 * time.Minute)
-					state.NextRetryAfter = next
-					suspendReason = "unauthorized"
+				if isDeactivatedWorkspaceError(result.Error) {
+					// Permanent workspace deactivation: disable the entire auth so it stops being selected.
+					state.Status = StatusDisabled
+					state.Unavailable = true
+					state.NextRetryAfter = now.Add(deactivatedWorkspaceBackoff)
+					quarantineAuth(auth, now, result.Error, StatusDisabled, "deactivated_workspace", deactivatedWorkspaceBackoff)
+					updateAggregatedAvailability(auth, now)
+					suspendReason = "deactivated_workspace"
 					shouldSuspendModel = true
-				case 402, 403:
-					next := now.Add(30 * time.Minute)
-					state.NextRetryAfter = next
-					suspendReason = "payment_required"
-					shouldSuspendModel = true
-				case 404:
-					next := now.Add(12 * time.Hour)
-					state.NextRetryAfter = next
-					suspendReason = "not_found"
-					shouldSuspendModel = true
-				case 429:
-					var next time.Time
-					backoffLevel := state.Quota.BackoffLevel
-					if result.RetryAfter != nil {
-						next = now.Add(*result.RetryAfter)
-					} else {
-						cooldown, nextLevel := nextQuotaCooldown(backoffLevel)
-						if cooldown > 0 {
-							next = now.Add(cooldown)
-						}
-						backoffLevel = nextLevel
-					}
-					state.NextRetryAfter = next
-					state.Quota = QuotaState{
-						Exceeded:      true,
-						Reason:        "quota",
-						NextRecoverAt: next,
-						BackoffLevel:  backoffLevel,
-					}
-					suspendReason = "quota"
-					shouldSuspendModel = true
-					setModelQuota = true
-				case 408, 500, 502, 503, 504:
-					if quotaCooldownDisabled.Load() {
-						state.NextRetryAfter = time.Time{}
-					} else {
-						next := now.Add(1 * time.Minute)
+				} else {
+					statusCode := statusCodeFromResult(result.Error)
+					switch statusCode {
+					case 401:
+						next := now.Add(30 * time.Minute)
 						state.NextRetryAfter = next
+						suspendReason = "unauthorized"
+						shouldSuspendModel = true
+					case 402, 403:
+						next := now.Add(30 * time.Minute)
+						state.NextRetryAfter = next
+						suspendReason = "payment_required"
+						shouldSuspendModel = true
+					case 404:
+						next := now.Add(12 * time.Hour)
+						state.NextRetryAfter = next
+						suspendReason = "not_found"
+						shouldSuspendModel = true
+					case 429:
+						var next time.Time
+						backoffLevel := state.Quota.BackoffLevel
+						if result.RetryAfter != nil {
+							next = now.Add(*result.RetryAfter)
+						} else {
+							cooldown, nextLevel := nextQuotaCooldown(backoffLevel)
+							if cooldown > 0 {
+								next = now.Add(cooldown)
+							}
+							backoffLevel = nextLevel
+						}
+						state.NextRetryAfter = next
+						state.Quota = QuotaState{
+							Exceeded:      true,
+							Reason:        "quota",
+							NextRecoverAt: next,
+							BackoffLevel:  backoffLevel,
+						}
+						suspendReason = "quota"
+						shouldSuspendModel = true
+						setModelQuota = true
+					case 408, 500, 502, 503, 504:
+						if quotaCooldownDisabled.Load() {
+							state.NextRetryAfter = time.Time{}
+						} else {
+							next := now.Add(1 * time.Minute)
+							state.NextRetryAfter = next
+						}
+					default:
+						state.NextRetryAfter = time.Time{}
 					}
-				default:
-					state.NextRetryAfter = time.Time{}
-				}
 
-				auth.Status = StatusError
-				auth.UpdatedAt = now
-				updateAggregatedAvailability(auth, now)
+					auth.Status = StatusError
+					auth.UpdatedAt = now
+					updateAggregatedAvailability(auth, now)
+				}
 			} else {
 				applyAuthFailureState(auth, result.Error, result.RetryAfter, now)
 			}
@@ -1400,6 +1433,161 @@ func retryAfterFromError(err error) *time.Duration {
 	return &val
 }
 
+func isDeactivatedWorkspaceError(err *Error) bool {
+	if err == nil {
+		return false
+	}
+	code := strings.ToLower(strings.TrimSpace(err.Code))
+	if code == "deactivated_workspace" {
+		return true
+	}
+	msg := strings.ToLower(err.Message)
+	return strings.Contains(msg, "deactivated_workspace") || strings.Contains(msg, "deactivated workspace")
+}
+
+func isRefreshTokenReusedErrorMessage(message string) bool {
+	msg := strings.ToLower(strings.TrimSpace(message))
+	if msg == "" {
+		return false
+	}
+	return strings.Contains(msg, "refresh_token_reused") || strings.Contains(msg, "refresh token reused") || strings.Contains(msg, "token_reused") || strings.Contains(msg, "token has already been used")
+}
+
+func quarantineAuth(auth *Auth, now time.Time, resultErr *Error, status Status, statusMessage string, backoff time.Duration) {
+	if auth == nil {
+		return
+	}
+	if backoff <= 0 {
+		backoff = refreshFailureBackoff
+	}
+	auth.Disabled = true
+	auth.Status = status
+	auth.StatusMessage = statusMessage
+	auth.Unavailable = true
+	auth.NextRetryAfter = now.Add(backoff)
+	auth.NextRefreshAfter = now.Add(backoff)
+	auth.LastError = cloneError(resultErr)
+	auth.UpdatedAt = now
+}
+
+func markAuthReloginRequired(auth *Auth, now time.Time, cause error) {
+	if auth == nil {
+		return
+	}
+	msg := ""
+	if cause != nil {
+		msg = cause.Error()
+	}
+	// Do not hard-disable: keep semantic distinction between "disabled" and
+	// "unavailable until re-login".
+	auth.Disabled = false
+	auth.Status = StatusError
+	auth.StatusMessage = "relogin_required"
+	auth.Unavailable = true
+	auth.NextRetryAfter = now.Add(refreshTokenReusedBackoff)
+	auth.NextRefreshAfter = now.Add(refreshTokenReusedBackoff)
+	auth.LastError = &Error{Code: extractErrorCode(cause), Message: msg}
+	auth.UpdatedAt = now
+}
+
+func extractErrorCode(err error) string {
+	if err == nil {
+		return ""
+	}
+	type codeProvider interface{ Code() string }
+	var cp codeProvider
+	if errors.As(err, &cp) && cp != nil {
+		code := strings.TrimSpace(cp.Code())
+		if code != "" {
+			return code
+		}
+	}
+	msg := strings.TrimSpace(err.Error())
+	if msg == "" {
+		return ""
+	}
+	// Heuristic extraction for common patterns:
+	// - "code: message"  (e.g., "deactivated_workspace: ...")
+	// - "...\"code\":\"X\"..." JSON-ish payload in error string
+	if idx := strings.Index(msg, ":"); idx > 0 {
+		left := strings.TrimSpace(msg[:idx])
+		if left != "" && len(left) <= 64 && !strings.ContainsAny(left, " \t\n\r{}[]\"") {
+			return left
+		}
+	}
+	lower := strings.ToLower(msg)
+	for _, known := range []string{"deactivated_workspace", "refresh_token_reused", "token_reused"} {
+		if strings.Contains(lower, known) {
+			return known
+		}
+	}
+	return ""
+}
+
+type refreshLockHandle struct {
+	path string
+}
+
+func (h *refreshLockHandle) release() {
+	if h == nil || h.path == "" {
+		return
+	}
+	_ = os.Remove(h.path)
+}
+
+func (m *Manager) refreshLockDir() string {
+	if m == nil {
+		return ""
+	}
+	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
+	if cfg == nil {
+		return ""
+	}
+	dir := strings.TrimSpace(cfg.AuthDir)
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, ".refresh_locks")
+}
+
+func refreshLockPath(lockDir string, authID string) string {
+	if lockDir == "" || strings.TrimSpace(authID) == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(authID))
+	return filepath.Join(lockDir, "refresh-"+hex.EncodeToString(sum[:8])+
+		".lock")
+}
+
+func tryAcquireRefreshLock(lockDir string, authID string, now time.Time) (*refreshLockHandle, bool) {
+	lockPath := refreshLockPath(lockDir, authID)
+	if lockPath == "" {
+		return nil, true
+	}
+	if err := os.MkdirAll(lockDir, 0o700); err != nil {
+		return nil, true
+	}
+	file, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err == nil {
+		_, _ = file.WriteString(strconv.FormatInt(now.Unix(), 10))
+		_ = file.Close()
+		return &refreshLockHandle{path: lockPath}, true
+	}
+	// If a lock exists but is stale, best-effort delete.
+	if info, statErr := os.Stat(lockPath); statErr == nil {
+		if now.Sub(info.ModTime()) > refreshLockStaleAfter {
+			_ = os.Remove(lockPath)
+			file, err2 := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+			if err2 == nil {
+				_, _ = file.WriteString(strconv.FormatInt(now.Unix(), 10))
+				_ = file.Close()
+				return &refreshLockHandle{path: lockPath}, true
+			}
+		}
+	}
+	return nil, false
+}
+
 func statusCodeFromResult(err *Error) int {
 	if err == nil {
 		return 0
@@ -1411,6 +1599,13 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 	if auth == nil {
 		return
 	}
+
+	// Hard-disable when upstream signals the workspace has been deactivated.
+	if isDeactivatedWorkspaceError(resultErr) {
+		quarantineAuth(auth, now, resultErr, StatusDisabled, "deactivated_workspace", deactivatedWorkspaceBackoff)
+		return
+	}
+
 	auth.Unavailable = true
 	auth.Status = StatusError
 	auth.UpdatedAt = now
@@ -1659,9 +1854,11 @@ func (m *Manager) persist(ctx context.Context, auth *Auth) error {
 // every few seconds and triggers refresh operations when required.
 // Only one loop is kept alive; starting a new one cancels the previous run.
 func (m *Manager) StartAutoRefresh(parent context.Context, interval time.Duration) {
-	if interval <= 0 || interval > refreshCheckInterval {
+	if interval <= 0 {
 		interval = refreshCheckInterval
-	} else {
+	}
+	// Clamp lower bound to avoid overly tight refresh loops.
+	if interval < refreshCheckInterval {
 		interval = refreshCheckInterval
 	}
 	if m.refreshCancel != nil {
@@ -1950,47 +2147,73 @@ func (m *Manager) refreshAuth(ctx context.Context, id string) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	m.mu.RLock()
-	auth := m.auths[id]
-	var exec ProviderExecutor
-	if auth != nil {
-		exec = m.executors[auth.Provider]
-	}
-	m.mu.RUnlock()
-	if auth == nil || exec == nil {
+	id = strings.TrimSpace(id)
+	if id == "" || m == nil {
 		return
 	}
-	cloned := auth.Clone()
-	updated, err := exec.Refresh(ctx, cloned)
-	if err != nil && errors.Is(err, context.Canceled) {
-		log.Debugf("refresh canceled for %s, %s", auth.Provider, auth.ID)
-		return
-	}
-	log.Debugf("refreshed %s, %s, %v", auth.Provider, auth.ID, err)
-	now := time.Now()
-	if err != nil {
-		m.mu.Lock()
-		if current := m.auths[id]; current != nil {
-			current.NextRefreshAfter = now.Add(refreshFailureBackoff)
-			current.LastError = &Error{Message: err.Error()}
-			m.auths[id] = current
+
+	_, _, _ = m.refreshSF.Do(id, func() (any, error) {
+		m.mu.RLock()
+		auth := m.auths[id]
+		var exec ProviderExecutor
+		if auth != nil {
+			exec = m.executors[executorKeyFromAuth(auth)]
 		}
-		m.mu.Unlock()
-		return
-	}
-	if updated == nil {
-		updated = cloned
-	}
-	// Preserve runtime created by the executor during Refresh.
-	// If executor didn't set one, fall back to the previous runtime.
-	if updated.Runtime == nil {
-		updated.Runtime = auth.Runtime
-	}
-	updated.LastRefreshedAt = now
-	updated.NextRefreshAfter = time.Time{}
-	updated.LastError = nil
-	updated.UpdatedAt = now
-	_, _ = m.Update(ctx, updated)
+		m.mu.RUnlock()
+		if auth == nil || exec == nil {
+			return nil, nil
+		}
+
+		now := time.Now()
+		lockDir := m.refreshLockDir()
+		lock, ok := tryAcquireRefreshLock(lockDir, id, now)
+		if !ok {
+			return nil, nil
+		}
+		defer lock.release()
+
+		cloned := auth.Clone()
+		updated, err := exec.Refresh(ctx, cloned)
+		if err != nil && errors.Is(err, context.Canceled) {
+			log.Debugf("refresh canceled for %s, %s", auth.Provider, auth.ID)
+			return nil, nil
+		}
+		log.Debugf("refreshed %s, %s, %v", auth.Provider, auth.ID, err)
+		now = time.Now()
+
+		if err != nil {
+			m.mu.Lock()
+			if current := m.auths[id]; current != nil {
+				if shouldDisableAutoRefreshOnError(current.Provider, err) {
+					// Stop hammering a known-bad refresh token; require operator re-login.
+					markAuthReloginRequired(current, now, err)
+				} else {
+					current.NextRefreshAfter = now.Add(refreshFailureBackoff)
+					current.LastError = &Error{Message: err.Error()}
+					current.UpdatedAt = now
+				}
+				m.auths[id] = current
+				_ = m.persist(ctx, current)
+			}
+			m.mu.Unlock()
+			return nil, err
+		}
+
+		if updated == nil {
+			updated = cloned
+		}
+		// Preserve runtime created by the executor during Refresh.
+		// If executor didn't set one, fall back to the previous runtime.
+		if updated.Runtime == nil {
+			updated.Runtime = auth.Runtime
+		}
+		updated.LastRefreshedAt = now
+		updated.NextRefreshAfter = time.Time{}
+		updated.LastError = nil
+		updated.UpdatedAt = now
+		_, _ = m.Update(ctx, updated)
+		return nil, nil
+	})
 }
 
 func (m *Manager) executorFor(provider string) ProviderExecutor {
@@ -2022,6 +2245,17 @@ type RoundTripperProvider interface {
 // to mutate outbound HTTP requests with provider credentials.
 type RequestPreparer interface {
 	PrepareRequest(req *http.Request, auth *Auth) error
+}
+
+func shouldDisableAutoRefreshOnError(provider string, err error) bool {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "" {
+		return false
+	}
+	if err == nil {
+		return false
+	}
+	return isRefreshTokenReusedErrorMessage(err.Error())
 }
 
 func executorKeyFromAuth(auth *Auth) string {
