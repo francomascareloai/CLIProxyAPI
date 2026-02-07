@@ -308,6 +308,9 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 // It defines the endpoints and associates them with their respective handlers.
 func (s *Server) setupRoutes() {
 	s.engine.GET("/management.html", s.serveManagementControlPanel)
+	s.engine.GET("/usage-extended.html", s.serveStaticAsset("usage-extended.html"))
+	s.engine.GET("/dashboard", s.serveStaticAsset("index.html"))
+	s.engine.GET("/index.html", s.serveStaticAsset("index.html"))
 	openaiHandlers := openai.NewOpenAIAPIHandler(s.handlers)
 	geminiHandlers := gemini.NewGeminiAPIHandler(s.handlers)
 	geminiCLIHandlers := gemini.NewGeminiCLIAPIHandler(s.handlers)
@@ -472,16 +475,20 @@ func (s *Server) registerManagementRoutes() {
 
 	log.Info("management routes registered after secret key configuration")
 
-	mgmt := s.engine.Group("/v0/management")
-	mgmt.Use(s.managementAvailabilityMiddleware(), s.mgmt.Middleware())
-	{
-		mgmt.GET("/usage", s.mgmt.GetUsageStatistics)
-		mgmt.GET("/usage/export", s.mgmt.ExportUsageStatistics)
-		mgmt.POST("/usage/import", s.mgmt.ImportUsageStatistics)
-		mgmt.GET("/config", s.mgmt.GetConfig)
-		mgmt.GET("/config.yaml", s.mgmt.GetConfigYAML)
-		mgmt.PUT("/config.yaml", s.mgmt.PutConfigYAML)
-		mgmt.GET("/latest-version", s.mgmt.GetLatestVersion)
+		mgmt := s.engine.Group("/v0/management")
+		mgmt.Use(s.managementAvailabilityMiddleware(), s.mgmt.Middleware())
+		{
+			mgmt.GET("/usage", s.mgmt.GetUsageStatistics)
+			mgmt.GET("/usage/export", s.mgmt.ExportUsageStatistics)
+			mgmt.POST("/usage/import", s.mgmt.ImportUsageStatistics)
+			mgmt.GET("/usage/accounts", s.mgmt.GetAccountStats)
+			mgmt.GET("/usage/export.csv", s.mgmt.ExportUsageCSV)
+			mgmt.POST("/usage/compact", s.mgmt.CompactUsageData)
+			mgmt.GET("/cooldown", s.mgmt.GetCooldownStatus)
+			mgmt.GET("/config", s.mgmt.GetConfig)
+			mgmt.GET("/config.yaml", s.mgmt.GetConfigYAML)
+			mgmt.PUT("/config.yaml", s.mgmt.PutConfigYAML)
+			mgmt.GET("/latest-version", s.mgmt.GetLatestVersion)
 
 		mgmt.GET("/debug", s.mgmt.GetDebug)
 		mgmt.PUT("/debug", s.mgmt.PutDebug)
@@ -666,6 +673,28 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 	}
 
 	c.File(filePath)
+}
+
+// serveStaticAsset returns a handler that serves a static file from the static directory.
+func (s *Server) serveStaticAsset(filename string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		cfg := s.cfg
+		if cfg == nil || cfg.RemoteManagement.DisableControlPanel {
+			c.AbortWithStatus(http.StatusNotFound)
+			return
+		}
+		staticDir := managementasset.StaticDir(s.configFilePath)
+		if strings.TrimSpace(staticDir) == "" {
+			c.AbortWithStatus(http.StatusNotFound)
+			return
+		}
+		filePath := filepath.Join(staticDir, filename)
+		if _, err := os.Stat(filePath); err != nil {
+			c.AbortWithStatus(http.StatusNotFound)
+			return
+		}
+		c.File(filePath)
+	}
 }
 
 func (s *Server) enableKeepAlive(timeout time.Duration, onTimeout func()) {
