@@ -40,6 +40,42 @@ type persistedModel struct {
 	Details       []RequestDetail `json:"details"`
 }
 
+func orderedModelDetails(m *modelStats) []RequestDetail {
+	if m == nil {
+		return nil
+	}
+	seg1, seg2 := m.orderedDetailSegments()
+	if len(seg1) == 0 && len(seg2) == 0 {
+		return nil
+	}
+	out := make([]RequestDetail, 0, len(seg1)+len(seg2))
+	out = append(out, seg1...)
+	out = append(out, seg2...)
+	return out
+}
+
+func setModelDetails(m *modelStats, details []RequestDetail) {
+	if m == nil {
+		return
+	}
+	if maxRequestDetailsPerModel > 0 && len(details) > maxRequestDetailsPerModel {
+		// Keep the newest N entries.
+		details = details[len(details)-maxRequestDetailsPerModel:]
+	}
+	if len(details) == 0 {
+		m.details = nil
+		m.detailsNext = 0
+		return
+	}
+	if cap(m.details) < len(details) {
+		m.details = make([]RequestDetail, len(details))
+	} else {
+		m.details = m.details[:len(details)]
+	}
+	copy(m.details, details)
+	m.detailsNext = 0
+}
+
 const (
 	persistenceVersion  = 1
 	persistenceFilename = "usage_statistics.json"
@@ -100,23 +136,22 @@ func (s *RequestStatistics) Save() error {
 		TokensByHour:   make(map[int]int64, len(s.tokensByHour)),
 	}
 
-	for apiName, stats := range s.apis {
-		pAPI := &persistedAPI{
-			TotalRequests: stats.TotalRequests,
-			TotalTokens:   stats.TotalTokens,
-			Models:        make(map[string]*persistedModel, len(stats.Models)),
-		}
-		for modelName, modelStatsValue := range stats.Models {
-			details := make([]RequestDetail, len(modelStatsValue.Details))
-			copy(details, modelStatsValue.Details)
-			pAPI.Models[modelName] = &persistedModel{
-				TotalRequests: modelStatsValue.TotalRequests,
-				TotalTokens:   modelStatsValue.TotalTokens,
-				Details:       details,
+		for apiName, stats := range s.apis {
+			pAPI := &persistedAPI{
+				TotalRequests: stats.TotalRequests,
+				TotalTokens:   stats.TotalTokens,
+				Models:        make(map[string]*persistedModel, len(stats.Models)),
 			}
+			for modelName, modelStatsValue := range stats.Models {
+				details := orderedModelDetails(modelStatsValue)
+				pAPI.Models[modelName] = &persistedModel{
+					TotalRequests: modelStatsValue.TotalRequests,
+					TotalTokens:   modelStatsValue.TotalTokens,
+					Details:       details,
+				}
+			}
+			data.APIs[apiName] = pAPI
 		}
-		data.APIs[apiName] = pAPI
-	}
 
 	for k, v := range s.requestsByDay {
 		data.RequestsByDay[k] = v
@@ -194,24 +229,24 @@ func (s *RequestStatistics) Load() error {
 	s.failureCount = data.FailureCount
 	s.totalTokens = data.TotalTokens
 
-	s.apis = make(map[string]*apiStats, len(data.APIs))
-	for apiName, pAPI := range data.APIs {
-		stats := &apiStats{
-			TotalRequests: pAPI.TotalRequests,
-			TotalTokens:   pAPI.TotalTokens,
-			Models:        make(map[string]*modelStats, len(pAPI.Models)),
-		}
-		for modelName, pModel := range pAPI.Models {
-			details := make([]RequestDetail, len(pModel.Details))
-			copy(details, pModel.Details)
-			stats.Models[modelName] = &modelStats{
-				TotalRequests: pModel.TotalRequests,
-				TotalTokens:   pModel.TotalTokens,
-				Details:       details,
+		s.apis = make(map[string]*apiStats, len(data.APIs))
+		for apiName, pAPI := range data.APIs {
+			stats := &apiStats{
+				TotalRequests: pAPI.TotalRequests,
+				TotalTokens:   pAPI.TotalTokens,
+				Models:        make(map[string]*modelStats, len(pAPI.Models)),
 			}
+			for modelName, pModel := range pAPI.Models {
+				details := make([]RequestDetail, len(pModel.Details))
+				copy(details, pModel.Details)
+				ms := newModelStats()
+				ms.TotalRequests = pModel.TotalRequests
+				ms.TotalTokens = pModel.TotalTokens
+				setModelDetails(ms, details)
+				stats.Models[modelName] = ms
+			}
+			s.apis[apiName] = stats
 		}
-		s.apis[apiName] = stats
-	}
 
 	s.requestsByDay = make(map[string]int64, len(data.RequestsByDay))
 	for k, v := range data.RequestsByDay {
@@ -310,20 +345,28 @@ func (s *RequestStatistics) CompactOldDetails() (removedCount int) {
 
 	for _, apiStats := range s.apis {
 		for _, modelStats := range apiStats.Models {
-			if len(modelStats.Details) == 0 {
+			seg1, seg2 := modelStats.orderedDetailSegments()
+			if len(seg1) == 0 && len(seg2) == 0 {
 				continue
 			}
 
 			// Keep only details newer than cutoff
-			kept := make([]RequestDetail, 0, len(modelStats.Details))
-			for _, detail := range modelStats.Details {
+			kept := make([]RequestDetail, 0, len(seg1)+len(seg2))
+			for _, detail := range seg1 {
 				if detail.Timestamp.After(cutoff) {
 					kept = append(kept, detail)
 				} else {
 					removedCount++
 				}
 			}
-			modelStats.Details = kept
+			for _, detail := range seg2 {
+				if detail.Timestamp.After(cutoff) {
+					kept = append(kept, detail)
+				} else {
+					removedCount++
+				}
+			}
+			setModelDetails(modelStats, kept)
 		}
 	}
 
@@ -359,7 +402,33 @@ func (s *RequestStatistics) GetAccountStats() []AccountStats {
 
 	for _, apiStats := range s.apis {
 		for _, modelStats := range apiStats.Models {
-			for _, detail := range modelStats.Details {
+			seg1, seg2 := modelStats.orderedDetailSegments()
+			for _, detail := range seg1 {
+				source := detail.Source
+				if source == "" {
+					source = "unknown"
+				}
+
+				stats, ok := accountMap[source]
+				if !ok {
+					stats = &AccountStats{Source: source}
+					accountMap[source] = stats
+				}
+
+				stats.TotalRequests++
+				stats.TotalTokens += detail.Tokens.TotalTokens
+				stats.InputTokens += detail.Tokens.InputTokens
+				stats.OutputTokens += detail.Tokens.OutputTokens
+				if detail.Failed {
+					stats.FailureCount++
+				} else {
+					stats.SuccessCount++
+				}
+				if detail.Timestamp.After(stats.LastUsed) {
+					stats.LastUsed = detail.Timestamp
+				}
+			}
+			for _, detail := range seg2 {
 				source := detail.Source
 				if source == "" {
 					source = "unknown"
