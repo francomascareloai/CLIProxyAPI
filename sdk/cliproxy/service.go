@@ -5,11 +5,15 @@ package cliproxy
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api"
@@ -89,6 +93,15 @@ type Service struct {
 
 	// wsGateway manages websocket Gemini providers.
 	wsGateway *wsrelay.Manager
+
+	// reloadApplyMu serializes callback application and allows stale-callback dropping.
+	reloadApplyMu sync.Mutex
+	// reloadRequested counts reload callback requests entering the service.
+	reloadRequested atomic.Uint64
+	// reloadExecuted counts reload callback applications performed.
+	reloadExecuted atomic.Uint64
+	// reloadDroppedStale counts stale callbacks dropped while a newer callback is pending.
+	reloadDroppedStale atomic.Uint64
 }
 
 // RegisterUsagePlugin registers a usage plugin on the global usage manager.
@@ -420,6 +433,99 @@ func (s *Service) rebindExecutors() {
 	}
 }
 
+func normalizeRoutingStrategy(strategy string) string {
+	switch strategy {
+	case "fill-first", "fillfirst", "ff":
+		return "fill-first"
+	default:
+		return "round-robin"
+	}
+}
+
+func shouldRunFullServerUpdate(previousCfg, nextCfg *config.Config) bool {
+	if nextCfg == nil {
+		return false
+	}
+	if previousCfg == nil {
+		return true
+	}
+	if previousCfg == nextCfg {
+		return false
+	}
+	previousFingerprint, okPrev := fullConfigFingerprint(previousCfg)
+	nextFingerprint, okNext := fullConfigFingerprint(nextCfg)
+	if !okPrev || !okNext {
+		// Fail-safe: if fingerprinting fails, force full update to avoid stale runtime state.
+		return true
+	}
+	return previousFingerprint != nextFingerprint
+}
+
+func shouldRebindExecutorsForConfig(previousCfg, nextCfg *config.Config) bool {
+	if nextCfg == nil {
+		return false
+	}
+	if previousCfg == nil {
+		return true
+	}
+	if previousCfg == nextCfg {
+		return false
+	}
+	previousFingerprint, okPrev := executorConfigFingerprint(previousCfg)
+	nextFingerprint, okNext := executorConfigFingerprint(nextCfg)
+	if !okPrev || !okNext {
+		// Fail-safe: if fingerprinting fails, force rebind to avoid stale executors.
+		return true
+	}
+	return previousFingerprint != nextFingerprint
+}
+
+func fullConfigFingerprint(cfg *config.Config) (string, bool) {
+	if cfg == nil {
+		return "", true
+	}
+	return fingerprintAny(cfg)
+}
+
+type executorRebindInputs struct {
+	SDKConfig           config.SDKConfig
+	GeminiKey           []config.GeminiKey
+	ClaudeKey           []config.ClaudeKey
+	CodexKey            []config.CodexKey
+	VertexCompatAPIKey  []config.VertexCompatKey
+	OpenAICompatibility []config.OpenAICompatibility
+	OAuthModelAlias     map[string][]config.OAuthModelAlias
+	OAuthExcludedModels map[string][]string
+	Payload             config.PayloadConfig
+}
+
+func executorConfigFingerprint(cfg *config.Config) (string, bool) {
+	if cfg == nil {
+		return "", true
+	}
+	return fingerprintAny(executorRebindInputs{
+		SDKConfig:           cfg.SDKConfig,
+		GeminiKey:           cfg.GeminiKey,
+		ClaudeKey:           cfg.ClaudeKey,
+		CodexKey:            cfg.CodexKey,
+		VertexCompatAPIKey:  cfg.VertexCompatAPIKey,
+		OpenAICompatibility: cfg.OpenAICompatibility,
+		OAuthModelAlias:     cfg.OAuthModelAlias,
+		OAuthExcludedModels: cfg.OAuthExcludedModels,
+		Payload:             cfg.Payload,
+	})
+}
+
+func fingerprintAny(value any) (string, bool) {
+	data, errMarshal := json.Marshal(value)
+	if errMarshal != nil {
+		log.Warnf("failed to compute config fingerprint: %v", errMarshal)
+		return "", false
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), true
+}
+
 // Run starts the service and blocks until the context is cancelled or the server stops.
 // It initializes all components including authentication, file watching, HTTP server,
 // and starts processing requests. The method blocks until the context is cancelled.
@@ -530,33 +636,34 @@ func (s *Service) Run(ctx context.Context) error {
 
 	var watcherWrapper *WatcherWrapper
 	reloadCallback := func(newCfg *config.Config) {
+		sequence := s.reloadRequested.Add(1)
+		s.reloadApplyMu.Lock()
+		if sequence != s.reloadRequested.Load() {
+			s.reloadDroppedStale.Add(1)
+			s.reloadApplyMu.Unlock()
+			return
+		}
+		defer s.reloadApplyMu.Unlock()
+
 		previousStrategy := ""
+		var previousCfg *config.Config
 		s.cfgMu.RLock()
 		if s.cfg != nil {
+			previousCfg = s.cfg
 			previousStrategy = strings.ToLower(strings.TrimSpace(s.cfg.Routing.Strategy))
 		}
 		s.cfgMu.RUnlock()
 
 		if newCfg == nil {
-			s.cfgMu.RLock()
-			newCfg = s.cfg
-			s.cfgMu.RUnlock()
+			newCfg = previousCfg
 		}
 		if newCfg == nil {
 			return
 		}
 
 		nextStrategy := strings.ToLower(strings.TrimSpace(newCfg.Routing.Strategy))
-		normalizeStrategy := func(strategy string) string {
-			switch strategy {
-			case "fill-first", "fillfirst", "ff":
-				return "fill-first"
-			default:
-				return "round-robin"
-			}
-		}
-		previousStrategy = normalizeStrategy(previousStrategy)
-		nextStrategy = normalizeStrategy(nextStrategy)
+		previousStrategy = normalizeRoutingStrategy(previousStrategy)
+		nextStrategy = normalizeRoutingStrategy(nextStrategy)
 		if s.coreManager != nil && previousStrategy != nextStrategy {
 			var selector coreauth.Selector
 			switch nextStrategy {
@@ -568,19 +675,46 @@ func (s *Service) Run(ctx context.Context) error {
 			s.coreManager.SetSelector(selector)
 		}
 
-		s.applyRetryConfig(newCfg)
-		s.applyPprofConfig(newCfg)
-		if s.server != nil {
-			s.server.UpdateClients(newCfg)
+		fullUpdate := shouldRunFullServerUpdate(previousCfg, newCfg)
+		if fullUpdate {
+			s.applyRetryConfig(newCfg)
+			s.applyPprofConfig(newCfg)
+			if s.server != nil {
+				s.server.UpdateClients(newCfg)
+			}
+		} else if s.server != nil {
+			authEntries := -1
+			if watcherWrapper != nil {
+				authEntries = watcherWrapper.AuthFileCount()
+			}
+			s.server.UpdateAuthSnapshot(newCfg, authEntries)
 		}
+
 		s.cfgMu.Lock()
 		s.cfg = newCfg
 		s.cfgMu.Unlock()
 		if s.coreManager != nil {
-			s.coreManager.SetConfig(newCfg)
-			s.coreManager.SetOAuthModelAlias(newCfg.OAuthModelAlias)
+			if fullUpdate {
+				s.coreManager.SetConfig(newCfg)
+				s.coreManager.SetOAuthModelAlias(newCfg.OAuthModelAlias)
+			}
 		}
-		s.rebindExecutors()
+		if shouldRebindExecutorsForConfig(previousCfg, newCfg) {
+			s.rebindExecutors()
+		}
+		if watcherWrapper != nil {
+			metrics := watcherWrapper.ReloadMetricsSnapshot()
+			log.Debugf(
+				"watcher metrics snapshot: config(req=%d exec=%d coalesced=%d) auth(req=%d exec=%d coalesced=%d)",
+				metrics.ConfigRequested,
+				metrics.ConfigExecuted,
+				metrics.ConfigCoalesced,
+				metrics.AuthRequested,
+				metrics.AuthExecuted,
+				metrics.AuthCoalesced,
+			)
+		}
+		s.reloadExecuted.Add(1)
 	}
 
 	watcherWrapper, err = s.watcherFactory(s.configPath, s.cfg.AuthDir, reloadCallback)
@@ -588,6 +722,33 @@ func (s *Service) Run(ctx context.Context) error {
 		return fmt.Errorf("cliproxy: failed to create watcher: %w", err)
 	}
 	s.watcher = watcherWrapper
+	if s.server != nil {
+		s.server.SetRuntimeMetricsProvider(func() map[string]uint64 {
+			out := make(map[string]uint64)
+			if s.coreManager != nil {
+				for key, value := range s.coreManager.ResilienceMetricsSnapshot() {
+					out[key] = value
+				}
+			}
+			if s.watcher == nil {
+				out["cliproxy_reload_requested_total"] = s.reloadRequested.Load()
+				out["cliproxy_reload_executed_total"] = s.reloadExecuted.Load()
+				out["cliproxy_reload_dropped_stale_total"] = s.reloadDroppedStale.Load()
+				return out
+			}
+			metrics := s.watcher.ReloadMetricsSnapshot()
+			out["cliproxy_watcher_config_reload_requested_total"] = metrics.ConfigRequested
+			out["cliproxy_watcher_config_reload_executed_total"] = metrics.ConfigExecuted
+			out["cliproxy_watcher_config_reload_coalesced_total"] = metrics.ConfigCoalesced
+			out["cliproxy_watcher_auth_reload_requested_total"] = metrics.AuthRequested
+			out["cliproxy_watcher_auth_reload_executed_total"] = metrics.AuthExecuted
+			out["cliproxy_watcher_auth_reload_coalesced_total"] = metrics.AuthCoalesced
+			out["cliproxy_reload_requested_total"] = s.reloadRequested.Load()
+			out["cliproxy_reload_executed_total"] = s.reloadExecuted.Load()
+			out["cliproxy_reload_dropped_stale_total"] = s.reloadDroppedStale.Load()
+			return out
+		})
+	}
 	s.ensureAuthUpdateQueue(ctx)
 	if s.authUpdates != nil {
 		watcherWrapper.SetAuthUpdateQueue(s.authUpdates)

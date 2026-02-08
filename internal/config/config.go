@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"syscall"
 
@@ -21,6 +22,33 @@ import (
 const (
 	DefaultPanelGitHubRepository = "https://github.com/router-for-me/Cli-Proxy-API-Management-Center"
 	DefaultPprofAddr             = "127.0.0.1:8316"
+	DefaultModelsCacheStrategy   = "versioned"
+	DefaultModelsCacheTTLMs      = 300
+	DefaultUpstreamMaxIdleConns  = 256
+	DefaultUpstreamIdlePerHost   = 64
+	DefaultUpstreamMaxPerHost    = 128
+	DefaultUpstreamIdleTimeoutMS = 90000
+	DefaultUpstreamTLSHSMS       = 10000
+	DefaultUpstreamRespHdrMS     = 20000
+	DefaultUpstreamExpectContMS  = 1000
+	DefaultProviderCBThreshold   = 5
+	DefaultProviderHalfOpenMax   = 2
+	DefaultProviderOpenStateMS   = 30000
+	DefaultProviderMaxInFlight   = 256
+	DefaultProviderAdaptiveMin   = 1
+	DefaultProviderAdaptiveMax   = 256
+	DefaultProviderAdaptiveWin   = 8
+	DefaultProviderAdaptiveStep  = 1
+	DefaultProviderAdaptiveDecay = 0.70
+	DefaultAdaptiveRollbackWinMS = 60000
+	DefaultAdaptiveRollbackMinN  = 40
+	DefaultAdaptiveRollbackP95MS = 2000
+	DefaultAdaptiveRollbackErr   = 0.15
+	DefaultAdaptiveRollback429   = 0.08
+	DefaultAdaptiveRollback5xx   = 0.15
+	DefaultAutoProfileLatencyMS  = 20000
+	DefaultAutoProfileCooldownMS = 300000
+	DefaultAutoProfileMaxFiles   = 50
 )
 
 // Config represents the application's configuration, loaded from a YAML file.
@@ -47,6 +75,9 @@ type Config struct {
 	// Pprof config controls the optional pprof HTTP debug server.
 	Pprof PprofConfig `yaml:"pprof" json:"pprof"`
 
+	// AutoProfile config controls automatic heap/goroutine profile capture on runtime triggers.
+	AutoProfile AutoProfileConfig `yaml:"auto-profile" json:"auto-profile"`
+
 	// CommercialMode disables high-overhead HTTP middleware features to minimize per-request memory usage.
 	CommercialMode bool `yaml:"commercial-mode" json:"commercial-mode"`
 
@@ -71,6 +102,16 @@ type Config struct {
 	RequestRetry int `yaml:"request-retry" json:"request-retry"`
 	// MaxRetryInterval defines the maximum wait time in seconds before retrying a cooled-down credential.
 	MaxRetryInterval int `yaml:"max-retry-interval" json:"max-retry-interval"`
+	// AuthReloadDebounceMS controls watcher debounce window (milliseconds) for auth file update bursts.
+	AuthReloadDebounceMS int `yaml:"auth-reload-debounce-ms" json:"auth-reload-debounce-ms"`
+	// AuthReloadMaxCoalesceMS controls max watcher coalescing window (milliseconds) for auth updates.
+	AuthReloadMaxCoalesceMS int `yaml:"auth-reload-max-coalesce-ms" json:"auth-reload-max-coalesce-ms"`
+	// ModelsCache controls cache behavior for /v1/models responses.
+	ModelsCache ModelsCacheConfig `yaml:"models-cache" json:"models-cache"`
+	// UpstreamHTTP configures shared HTTP transport pooling and timeout tuning for upstream requests.
+	UpstreamHTTP UpstreamHTTPConfig `yaml:"upstream-http" json:"upstream-http"`
+	// ProviderResilience controls provider-level backpressure and circuit breaker behavior.
+	ProviderResilience ProviderResilienceConfig `yaml:"provider-resilience" json:"provider-resilience"`
 
 	// QuotaExceeded defines the behavior when a quota is exceeded.
 	QuotaExceeded QuotaExceeded `yaml:"quota-exceeded" json:"quota-exceeded"`
@@ -133,6 +174,60 @@ type PprofConfig struct {
 	Enable bool `yaml:"enable" json:"enable"`
 	// Addr is the host:port address for the pprof HTTP server.
 	Addr string `yaml:"addr" json:"addr"`
+}
+
+// AutoProfileConfig controls lightweight runtime profile capture when latency/errors spike.
+type AutoProfileConfig struct {
+	Enable             bool   `yaml:"enable" json:"enable"`
+	OutputDir          string `yaml:"output-dir" json:"output-dir"`
+	LatencyThresholdMS int    `yaml:"latency-threshold-ms" json:"latency-threshold-ms"`
+	CooldownMS         int    `yaml:"cooldown-ms" json:"cooldown-ms"`
+	MaxFiles           int    `yaml:"max-files" json:"max-files"`
+	TriggerStatuses    []int  `yaml:"trigger-statuses" json:"trigger-statuses"`
+}
+
+// ModelsCacheConfig controls /v1/models cache strategy.
+type ModelsCacheConfig struct {
+	// Strategy selects cache invalidation behavior.
+	// Supported values: "versioned" (default), "ttl_legacy".
+	Strategy string `yaml:"strategy" json:"strategy"`
+	// TTLMs defines TTL used only when Strategy=="ttl_legacy".
+	TTLMs int `yaml:"ttl-ms" json:"ttl-ms"`
+}
+
+// UpstreamHTTPConfig controls pooled upstream HTTP transport behavior.
+type UpstreamHTTPConfig struct {
+	MaxIdleConns            int  `yaml:"max-idle-conns" json:"max-idle-conns"`
+	MaxIdleConnsPerHost     int  `yaml:"max-idle-conns-per-host" json:"max-idle-conns-per-host"`
+	MaxConnsPerHost         int  `yaml:"max-conns-per-host" json:"max-conns-per-host"`
+	IdleConnTimeoutMS       int  `yaml:"idle-conn-timeout-ms" json:"idle-conn-timeout-ms"`
+	TLSHandshakeTimeoutMS   int  `yaml:"tls-handshake-timeout-ms" json:"tls-handshake-timeout-ms"`
+	ResponseHeaderTimeoutMS int  `yaml:"response-header-timeout-ms" json:"response-header-timeout-ms"`
+	ExpectContinueTimeoutMS int  `yaml:"expect-continue-timeout-ms" json:"expect-continue-timeout-ms"`
+	DisableKeepAlives       bool `yaml:"disable-keepalives" json:"disable-keepalives"`
+}
+
+// ProviderResilienceConfig controls provider-level backpressure and circuit breaking.
+type ProviderResilienceConfig struct {
+	CircuitBreakerEnabled          bool     `yaml:"circuit-breaker-enabled" json:"circuit-breaker-enabled"`
+	FailureThreshold               int      `yaml:"failure-threshold" json:"failure-threshold"`
+	HalfOpenMaxRequests            int      `yaml:"half-open-max-requests" json:"half-open-max-requests"`
+	OpenStateMS                    int      `yaml:"open-state-ms" json:"open-state-ms"`
+	MaxInflightPerProvider         int      `yaml:"max-inflight-per-provider" json:"max-inflight-per-provider"`
+	AdaptiveLimiterEnabled         bool     `yaml:"adaptive-limiter-enabled" json:"adaptive-limiter-enabled"`
+	AdaptiveProviders              []string `yaml:"adaptive-providers" json:"adaptive-providers"`
+	AdaptiveMinInflight            int      `yaml:"adaptive-min-inflight" json:"adaptive-min-inflight"`
+	AdaptiveMaxInflight            int      `yaml:"adaptive-max-inflight" json:"adaptive-max-inflight"`
+	AdaptiveSuccessWindow          int      `yaml:"adaptive-success-window" json:"adaptive-success-window"`
+	AdaptiveAdditiveStep           int      `yaml:"adaptive-additive-step" json:"adaptive-additive-step"`
+	AdaptiveBackoffFactor          float64  `yaml:"adaptive-backoff-factor" json:"adaptive-backoff-factor"`
+	AdaptiveAutoRollbackEnabled    bool     `yaml:"adaptive-auto-rollback-enabled" json:"adaptive-auto-rollback-enabled"`
+	AdaptiveAutoRollbackWindowMS   int      `yaml:"adaptive-auto-rollback-window-ms" json:"adaptive-auto-rollback-window-ms"`
+	AdaptiveAutoRollbackMinSamples int      `yaml:"adaptive-auto-rollback-min-samples" json:"adaptive-auto-rollback-min-samples"`
+	AdaptiveAutoRollbackMaxP95MS   int      `yaml:"adaptive-auto-rollback-max-p95-ms" json:"adaptive-auto-rollback-max-p95-ms"`
+	AdaptiveAutoRollbackMaxErrRate float64  `yaml:"adaptive-auto-rollback-max-error-rate" json:"adaptive-auto-rollback-max-error-rate"`
+	AdaptiveAutoRollbackMax429Rate float64  `yaml:"adaptive-auto-rollback-max-http429-rate" json:"adaptive-auto-rollback-max-http429-rate"`
+	AdaptiveAutoRollbackMax5xxRate float64  `yaml:"adaptive-auto-rollback-max-http5xx-rate" json:"adaptive-auto-rollback-max-http5xx-rate"`
 }
 
 // RemoteManagement holds management API configuration under 'remote-management'.
@@ -529,8 +624,48 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.ErrorLogsMaxFiles = 10
 	cfg.UsageStatisticsEnabled = false
 	cfg.DisableCooling = false
+	cfg.AuthReloadDebounceMS = 250
+	cfg.AuthReloadMaxCoalesceMS = 1000
+	cfg.ModelsCache.Strategy = DefaultModelsCacheStrategy
+	cfg.ModelsCache.TTLMs = DefaultModelsCacheTTLMs
+	cfg.UpstreamHTTP.MaxIdleConns = DefaultUpstreamMaxIdleConns
+	cfg.UpstreamHTTP.MaxIdleConnsPerHost = DefaultUpstreamIdlePerHost
+	cfg.UpstreamHTTP.MaxConnsPerHost = DefaultUpstreamMaxPerHost
+	cfg.UpstreamHTTP.IdleConnTimeoutMS = DefaultUpstreamIdleTimeoutMS
+	cfg.UpstreamHTTP.TLSHandshakeTimeoutMS = DefaultUpstreamTLSHSMS
+	cfg.UpstreamHTTP.ResponseHeaderTimeoutMS = DefaultUpstreamRespHdrMS
+	cfg.UpstreamHTTP.ExpectContinueTimeoutMS = DefaultUpstreamExpectContMS
+	cfg.ProviderResilience.CircuitBreakerEnabled = true
+	cfg.ProviderResilience.FailureThreshold = DefaultProviderCBThreshold
+	cfg.ProviderResilience.HalfOpenMaxRequests = DefaultProviderHalfOpenMax
+	cfg.ProviderResilience.OpenStateMS = DefaultProviderOpenStateMS
+	cfg.ProviderResilience.MaxInflightPerProvider = DefaultProviderMaxInFlight
+	cfg.ProviderResilience.AdaptiveLimiterEnabled = false
+	cfg.ProviderResilience.AdaptiveMinInflight = DefaultProviderAdaptiveMin
+	cfg.ProviderResilience.AdaptiveMaxInflight = DefaultProviderAdaptiveMax
+	cfg.ProviderResilience.AdaptiveSuccessWindow = DefaultProviderAdaptiveWin
+	cfg.ProviderResilience.AdaptiveAdditiveStep = DefaultProviderAdaptiveStep
+	cfg.ProviderResilience.AdaptiveBackoffFactor = DefaultProviderAdaptiveDecay
+	cfg.ProviderResilience.AdaptiveAutoRollbackEnabled = false
+	cfg.ProviderResilience.AdaptiveAutoRollbackWindowMS = DefaultAdaptiveRollbackWinMS
+	cfg.ProviderResilience.AdaptiveAutoRollbackMinSamples = DefaultAdaptiveRollbackMinN
+	cfg.ProviderResilience.AdaptiveAutoRollbackMaxP95MS = DefaultAdaptiveRollbackP95MS
+	cfg.ProviderResilience.AdaptiveAutoRollbackMaxErrRate = DefaultAdaptiveRollbackErr
+	cfg.ProviderResilience.AdaptiveAutoRollbackMax429Rate = DefaultAdaptiveRollback429
+	cfg.ProviderResilience.AdaptiveAutoRollbackMax5xxRate = DefaultAdaptiveRollback5xx
 	cfg.Pprof.Enable = false
 	cfg.Pprof.Addr = DefaultPprofAddr
+	cfg.AutoProfile.Enable = false
+	cfg.AutoProfile.LatencyThresholdMS = DefaultAutoProfileLatencyMS
+	cfg.AutoProfile.CooldownMS = DefaultAutoProfileCooldownMS
+	cfg.AutoProfile.MaxFiles = DefaultAutoProfileMaxFiles
+	cfg.AutoProfile.TriggerStatuses = []int{
+		429,
+		500,
+		502,
+		503,
+		504,
+	}
 	cfg.AmpCode.RestrictManagementToLocalhost = false // Default to false: API key auth is sufficient
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
@@ -588,6 +723,192 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	if cfg.ErrorLogsMaxFiles < 0 {
 		cfg.ErrorLogsMaxFiles = 10
 	}
+	if cfg.AuthReloadDebounceMS <= 0 {
+		cfg.AuthReloadDebounceMS = 250
+	}
+	if cfg.AuthReloadDebounceMS < 25 {
+		cfg.AuthReloadDebounceMS = 25
+	}
+	if cfg.AuthReloadDebounceMS > 5000 {
+		cfg.AuthReloadDebounceMS = 5000
+	}
+	if cfg.AuthReloadMaxCoalesceMS <= 0 {
+		cfg.AuthReloadMaxCoalesceMS = 1000
+	}
+	if cfg.AuthReloadMaxCoalesceMS > 15000 {
+		cfg.AuthReloadMaxCoalesceMS = 15000
+	}
+	if cfg.AuthReloadMaxCoalesceMS < cfg.AuthReloadDebounceMS {
+		cfg.AuthReloadMaxCoalesceMS = cfg.AuthReloadDebounceMS
+	}
+
+	cfg.ModelsCache.Strategy = strings.ToLower(strings.TrimSpace(cfg.ModelsCache.Strategy))
+	switch cfg.ModelsCache.Strategy {
+	case "", DefaultModelsCacheStrategy:
+		cfg.ModelsCache.Strategy = DefaultModelsCacheStrategy
+	case "ttl_legacy":
+		// keep value as-is
+	default:
+		cfg.ModelsCache.Strategy = DefaultModelsCacheStrategy
+	}
+	if cfg.ModelsCache.TTLMs <= 0 {
+		cfg.ModelsCache.TTLMs = DefaultModelsCacheTTLMs
+	}
+	if cfg.ModelsCache.TTLMs < 25 {
+		cfg.ModelsCache.TTLMs = 25
+	}
+	if cfg.ModelsCache.TTLMs > 5000 {
+		cfg.ModelsCache.TTLMs = 5000
+	}
+
+	if cfg.UpstreamHTTP.MaxIdleConns <= 0 {
+		cfg.UpstreamHTTP.MaxIdleConns = DefaultUpstreamMaxIdleConns
+	}
+	if cfg.UpstreamHTTP.MaxIdleConnsPerHost <= 0 {
+		cfg.UpstreamHTTP.MaxIdleConnsPerHost = DefaultUpstreamIdlePerHost
+	}
+	if cfg.UpstreamHTTP.MaxConnsPerHost <= 0 {
+		cfg.UpstreamHTTP.MaxConnsPerHost = DefaultUpstreamMaxPerHost
+	}
+	if cfg.UpstreamHTTP.IdleConnTimeoutMS <= 0 {
+		cfg.UpstreamHTTP.IdleConnTimeoutMS = DefaultUpstreamIdleTimeoutMS
+	}
+	if cfg.UpstreamHTTP.TLSHandshakeTimeoutMS <= 0 {
+		cfg.UpstreamHTTP.TLSHandshakeTimeoutMS = DefaultUpstreamTLSHSMS
+	}
+	if cfg.UpstreamHTTP.ResponseHeaderTimeoutMS <= 0 {
+		cfg.UpstreamHTTP.ResponseHeaderTimeoutMS = DefaultUpstreamRespHdrMS
+	}
+	if cfg.UpstreamHTTP.ExpectContinueTimeoutMS <= 0 {
+		cfg.UpstreamHTTP.ExpectContinueTimeoutMS = DefaultUpstreamExpectContMS
+	}
+
+	if cfg.ProviderResilience.FailureThreshold <= 0 {
+		cfg.ProviderResilience.FailureThreshold = DefaultProviderCBThreshold
+	}
+	if cfg.ProviderResilience.FailureThreshold > 100 {
+		cfg.ProviderResilience.FailureThreshold = 100
+	}
+	if cfg.ProviderResilience.HalfOpenMaxRequests <= 0 {
+		cfg.ProviderResilience.HalfOpenMaxRequests = DefaultProviderHalfOpenMax
+	}
+	if cfg.ProviderResilience.HalfOpenMaxRequests > 32 {
+		cfg.ProviderResilience.HalfOpenMaxRequests = 32
+	}
+	if cfg.ProviderResilience.OpenStateMS <= 0 {
+		cfg.ProviderResilience.OpenStateMS = DefaultProviderOpenStateMS
+	}
+	if cfg.ProviderResilience.OpenStateMS > 300000 {
+		cfg.ProviderResilience.OpenStateMS = 300000
+	}
+	if cfg.ProviderResilience.MaxInflightPerProvider <= 0 {
+		cfg.ProviderResilience.MaxInflightPerProvider = DefaultProviderMaxInFlight
+	}
+	if cfg.ProviderResilience.MaxInflightPerProvider > 10000 {
+		cfg.ProviderResilience.MaxInflightPerProvider = 10000
+	}
+	if cfg.ProviderResilience.AdaptiveMinInflight <= 0 {
+		cfg.ProviderResilience.AdaptiveMinInflight = DefaultProviderAdaptiveMin
+	}
+	if cfg.ProviderResilience.AdaptiveMinInflight > cfg.ProviderResilience.MaxInflightPerProvider {
+		cfg.ProviderResilience.AdaptiveMinInflight = cfg.ProviderResilience.MaxInflightPerProvider
+	}
+	if cfg.ProviderResilience.AdaptiveMaxInflight <= 0 {
+		cfg.ProviderResilience.AdaptiveMaxInflight = cfg.ProviderResilience.MaxInflightPerProvider
+	}
+	if cfg.ProviderResilience.AdaptiveMaxInflight > cfg.ProviderResilience.MaxInflightPerProvider {
+		cfg.ProviderResilience.AdaptiveMaxInflight = cfg.ProviderResilience.MaxInflightPerProvider
+	}
+	if cfg.ProviderResilience.AdaptiveMaxInflight < cfg.ProviderResilience.AdaptiveMinInflight {
+		cfg.ProviderResilience.AdaptiveMaxInflight = cfg.ProviderResilience.AdaptiveMinInflight
+	}
+	if cfg.ProviderResilience.AdaptiveSuccessWindow <= 0 {
+		cfg.ProviderResilience.AdaptiveSuccessWindow = DefaultProviderAdaptiveWin
+	}
+	if cfg.ProviderResilience.AdaptiveSuccessWindow > 1000 {
+		cfg.ProviderResilience.AdaptiveSuccessWindow = 1000
+	}
+	if cfg.ProviderResilience.AdaptiveAdditiveStep <= 0 {
+		cfg.ProviderResilience.AdaptiveAdditiveStep = DefaultProviderAdaptiveStep
+	}
+	if cfg.ProviderResilience.AdaptiveAdditiveStep > 256 {
+		cfg.ProviderResilience.AdaptiveAdditiveStep = 256
+	}
+	if cfg.ProviderResilience.AdaptiveBackoffFactor <= 0 || cfg.ProviderResilience.AdaptiveBackoffFactor >= 1 {
+		cfg.ProviderResilience.AdaptiveBackoffFactor = DefaultProviderAdaptiveDecay
+	}
+	if cfg.ProviderResilience.AdaptiveBackoffFactor < 0.10 {
+		cfg.ProviderResilience.AdaptiveBackoffFactor = 0.10
+	}
+	if cfg.ProviderResilience.AdaptiveBackoffFactor > 0.95 {
+		cfg.ProviderResilience.AdaptiveBackoffFactor = 0.95
+	}
+	if cfg.ProviderResilience.AdaptiveAutoRollbackWindowMS <= 0 {
+		cfg.ProviderResilience.AdaptiveAutoRollbackWindowMS = DefaultAdaptiveRollbackWinMS
+	}
+	if cfg.ProviderResilience.AdaptiveAutoRollbackWindowMS < 10000 {
+		cfg.ProviderResilience.AdaptiveAutoRollbackWindowMS = 10000
+	}
+	if cfg.ProviderResilience.AdaptiveAutoRollbackWindowMS > 3600000 {
+		cfg.ProviderResilience.AdaptiveAutoRollbackWindowMS = 3600000
+	}
+	if cfg.ProviderResilience.AdaptiveAutoRollbackMinSamples <= 0 {
+		cfg.ProviderResilience.AdaptiveAutoRollbackMinSamples = DefaultAdaptiveRollbackMinN
+	}
+	if cfg.ProviderResilience.AdaptiveAutoRollbackMinSamples < 5 {
+		cfg.ProviderResilience.AdaptiveAutoRollbackMinSamples = 5
+	}
+	if cfg.ProviderResilience.AdaptiveAutoRollbackMinSamples > 5000 {
+		cfg.ProviderResilience.AdaptiveAutoRollbackMinSamples = 5000
+	}
+	if cfg.ProviderResilience.AdaptiveAutoRollbackMaxP95MS <= 0 {
+		cfg.ProviderResilience.AdaptiveAutoRollbackMaxP95MS = DefaultAdaptiveRollbackP95MS
+	}
+	if cfg.ProviderResilience.AdaptiveAutoRollbackMaxP95MS < 50 {
+		cfg.ProviderResilience.AdaptiveAutoRollbackMaxP95MS = 50
+	}
+	if cfg.ProviderResilience.AdaptiveAutoRollbackMaxP95MS > 300000 {
+		cfg.ProviderResilience.AdaptiveAutoRollbackMaxP95MS = 300000
+	}
+	if cfg.ProviderResilience.AdaptiveAutoRollbackMaxErrRate <= 0 || cfg.ProviderResilience.AdaptiveAutoRollbackMaxErrRate >= 1 {
+		cfg.ProviderResilience.AdaptiveAutoRollbackMaxErrRate = DefaultAdaptiveRollbackErr
+	}
+	if cfg.ProviderResilience.AdaptiveAutoRollbackMax429Rate <= 0 || cfg.ProviderResilience.AdaptiveAutoRollbackMax429Rate >= 1 {
+		cfg.ProviderResilience.AdaptiveAutoRollbackMax429Rate = DefaultAdaptiveRollback429
+	}
+	if cfg.ProviderResilience.AdaptiveAutoRollbackMax5xxRate <= 0 || cfg.ProviderResilience.AdaptiveAutoRollbackMax5xxRate >= 1 {
+		cfg.ProviderResilience.AdaptiveAutoRollbackMax5xxRate = DefaultAdaptiveRollback5xx
+	}
+	cfg.ProviderResilience.AdaptiveProviders = normalizeProviderNames(cfg.ProviderResilience.AdaptiveProviders)
+	cfg.AutoProfile.OutputDir = strings.TrimSpace(cfg.AutoProfile.OutputDir)
+	if cfg.AutoProfile.LatencyThresholdMS <= 0 {
+		cfg.AutoProfile.LatencyThresholdMS = DefaultAutoProfileLatencyMS
+	}
+	if cfg.AutoProfile.LatencyThresholdMS < 1000 {
+		cfg.AutoProfile.LatencyThresholdMS = 1000
+	}
+	if cfg.AutoProfile.LatencyThresholdMS > 300000 {
+		cfg.AutoProfile.LatencyThresholdMS = 300000
+	}
+	if cfg.AutoProfile.CooldownMS <= 0 {
+		cfg.AutoProfile.CooldownMS = DefaultAutoProfileCooldownMS
+	}
+	if cfg.AutoProfile.CooldownMS < 10000 {
+		cfg.AutoProfile.CooldownMS = 10000
+	}
+	if cfg.AutoProfile.CooldownMS > 3600000 {
+		cfg.AutoProfile.CooldownMS = 3600000
+	}
+	if cfg.AutoProfile.MaxFiles <= 0 {
+		cfg.AutoProfile.MaxFiles = DefaultAutoProfileMaxFiles
+	}
+	if cfg.AutoProfile.MaxFiles < 5 {
+		cfg.AutoProfile.MaxFiles = 5
+	}
+	if cfg.AutoProfile.MaxFiles > 500 {
+		cfg.AutoProfile.MaxFiles = 500
+	}
+	cfg.AutoProfile.TriggerStatuses = normalizeHTTPStatusCodes(cfg.AutoProfile.TriggerStatuses, []int{429, 500, 502, 503, 504})
 
 	// Sync request authentication providers with inline API keys for backwards compatibility.
 	syncInlineAccessProvider(&cfg)
@@ -908,6 +1229,60 @@ func NormalizeOAuthExcludedModels(entries map[string][]string) map[string][]stri
 	if len(out) == 0 {
 		return nil
 	}
+	return out
+}
+
+func normalizeProviderNames(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, raw := range values {
+		value := strings.ToLower(strings.TrimSpace(raw))
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func normalizeHTTPStatusCodes(values []int, defaults []int) []int {
+	seen := make(map[int]struct{}, len(values))
+	out := make([]int, 0, len(values))
+	for _, value := range values {
+		if value < 100 || value > 599 {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	if len(out) == 0 {
+		out = make([]int, 0, len(defaults))
+		seen = make(map[int]struct{}, len(defaults))
+		for _, value := range defaults {
+			if value < 100 || value > 599 {
+				continue
+			}
+			if _, ok := seen[value]; ok {
+				continue
+			}
+			seen[value] = struct{}{}
+			out = append(out, value)
+		}
+	}
+	sort.Ints(out)
 	return out
 }
 

@@ -2,10 +2,12 @@ package executor
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
@@ -13,6 +15,19 @@ import (
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/net/proxy"
 )
+
+type upstreamTransportSettings struct {
+	maxIdleConns          int
+	maxIdleConnsPerHost   int
+	maxConnsPerHost       int
+	idleConnTimeout       time.Duration
+	tlsHandshakeTimeout   time.Duration
+	responseHeaderTimeout time.Duration
+	expectContinueTimeout time.Duration
+	disableKeepAlives     bool
+}
+
+var sharedTransportPool sync.Map
 
 // newProxyAwareHTTPClient creates an HTTP client with proper proxy configuration priority:
 // 1. Use auth.ProxyURL if configured (highest priority)
@@ -32,6 +47,7 @@ func newProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 	if timeout > 0 {
 		httpClient.Timeout = timeout
 	}
+	settings := upstreamTransportSettingsFromConfig(cfg)
 
 	// Priority 1: Use auth.ProxyURL if configured
 	var proxyURL string
@@ -46,7 +62,7 @@ func newProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 
 	// If we have a proxy URL configured, set up the transport
 	if proxyURL != "" {
-		transport := buildProxyTransport(proxyURL)
+		transport := pooledProxyTransport(proxyURL, settings)
 		if transport != nil {
 			httpClient.Transport = transport
 			return httpClient
@@ -58,9 +74,84 @@ func newProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 	// Priority 3: Use RoundTripper from context (typically from RoundTripperFor)
 	if rt, ok := ctx.Value("cliproxy.roundtripper").(http.RoundTripper); ok && rt != nil {
 		httpClient.Transport = rt
+		return httpClient
 	}
 
+	// Fallback: pooled direct transport (keep-alive + shared socket reuse).
+	httpClient.Transport = pooledProxyTransport("", settings)
 	return httpClient
+}
+
+func upstreamTransportSettingsFromConfig(cfg *config.Config) upstreamTransportSettings {
+	s := upstreamTransportSettings{
+		maxIdleConns:          config.DefaultUpstreamMaxIdleConns,
+		maxIdleConnsPerHost:   config.DefaultUpstreamIdlePerHost,
+		maxConnsPerHost:       config.DefaultUpstreamMaxPerHost,
+		idleConnTimeout:       time.Duration(config.DefaultUpstreamIdleTimeoutMS) * time.Millisecond,
+		tlsHandshakeTimeout:   time.Duration(config.DefaultUpstreamTLSHSMS) * time.Millisecond,
+		responseHeaderTimeout: time.Duration(config.DefaultUpstreamRespHdrMS) * time.Millisecond,
+		expectContinueTimeout: time.Duration(config.DefaultUpstreamExpectContMS) * time.Millisecond,
+	}
+	if cfg == nil {
+		return s
+	}
+	if cfg.UpstreamHTTP.MaxIdleConns > 0 {
+		s.maxIdleConns = cfg.UpstreamHTTP.MaxIdleConns
+	}
+	if cfg.UpstreamHTTP.MaxIdleConnsPerHost > 0 {
+		s.maxIdleConnsPerHost = cfg.UpstreamHTTP.MaxIdleConnsPerHost
+	}
+	if cfg.UpstreamHTTP.MaxConnsPerHost > 0 {
+		s.maxConnsPerHost = cfg.UpstreamHTTP.MaxConnsPerHost
+	}
+	if cfg.UpstreamHTTP.IdleConnTimeoutMS > 0 {
+		s.idleConnTimeout = time.Duration(cfg.UpstreamHTTP.IdleConnTimeoutMS) * time.Millisecond
+	}
+	if cfg.UpstreamHTTP.TLSHandshakeTimeoutMS > 0 {
+		s.tlsHandshakeTimeout = time.Duration(cfg.UpstreamHTTP.TLSHandshakeTimeoutMS) * time.Millisecond
+	}
+	if cfg.UpstreamHTTP.ResponseHeaderTimeoutMS > 0 {
+		s.responseHeaderTimeout = time.Duration(cfg.UpstreamHTTP.ResponseHeaderTimeoutMS) * time.Millisecond
+	}
+	if cfg.UpstreamHTTP.ExpectContinueTimeoutMS > 0 {
+		s.expectContinueTimeout = time.Duration(cfg.UpstreamHTTP.ExpectContinueTimeoutMS) * time.Millisecond
+	}
+	s.disableKeepAlives = cfg.UpstreamHTTP.DisableKeepAlives
+	return s
+}
+
+func pooledProxyTransport(proxyURL string, settings upstreamTransportSettings) *http.Transport {
+	key := transportCacheKey(proxyURL, settings)
+	if cached, ok := sharedTransportPool.Load(key); ok {
+		if transport, okCast := cached.(*http.Transport); okCast && transport != nil {
+			return transport
+		}
+	}
+
+	transport := buildProxyTransport(proxyURL, settings)
+	if transport == nil {
+		return nil
+	}
+	actual, _ := sharedTransportPool.LoadOrStore(key, transport)
+	if finalTransport, ok := actual.(*http.Transport); ok && finalTransport != nil {
+		return finalTransport
+	}
+	return transport
+}
+
+func transportCacheKey(proxyURL string, settings upstreamTransportSettings) string {
+	return fmt.Sprintf(
+		"%s|%d|%d|%d|%d|%d|%d|%d|%t",
+		strings.TrimSpace(proxyURL),
+		settings.maxIdleConns,
+		settings.maxIdleConnsPerHost,
+		settings.maxConnsPerHost,
+		settings.idleConnTimeout.Milliseconds(),
+		settings.tlsHandshakeTimeout.Milliseconds(),
+		settings.responseHeaderTimeout.Milliseconds(),
+		settings.expectContinueTimeout.Milliseconds(),
+		settings.disableKeepAlives,
+	)
 }
 
 // buildProxyTransport creates an HTTP transport configured for the given proxy URL.
@@ -71,9 +162,20 @@ func newProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *clip
 //
 // Returns:
 //   - *http.Transport: A configured transport, or nil if the proxy URL is invalid
-func buildProxyTransport(proxyURL string) *http.Transport {
-	if proxyURL == "" {
-		return nil
+func buildProxyTransport(proxyURL string, settings upstreamTransportSettings) *http.Transport {
+	baseTransport := &http.Transport{
+		MaxIdleConns:          settings.maxIdleConns,
+		MaxIdleConnsPerHost:   settings.maxIdleConnsPerHost,
+		MaxConnsPerHost:       settings.maxConnsPerHost,
+		IdleConnTimeout:       settings.idleConnTimeout,
+		TLSHandshakeTimeout:   settings.tlsHandshakeTimeout,
+		ResponseHeaderTimeout: settings.responseHeaderTimeout,
+		ExpectContinueTimeout: settings.expectContinueTimeout,
+		DisableKeepAlives:     settings.disableKeepAlives,
+		ForceAttemptHTTP2:     true,
+	}
+	if strings.TrimSpace(proxyURL) == "" {
+		return baseTransport
 	}
 
 	parsedURL, errParse := url.Parse(proxyURL)
@@ -99,18 +201,27 @@ func buildProxyTransport(proxyURL string) *http.Transport {
 			return nil
 		}
 		// Set up a custom transport using the SOCKS5 dialer
-		transport = &http.Transport{
-			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				return dialer.Dial(network, addr)
-			},
+		transport = baseTransport.Clone()
+		transport.Proxy = nil
+		transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return dialer.Dial(network, addr)
 		}
 	} else if parsedURL.Scheme == "http" || parsedURL.Scheme == "https" {
 		// Configure HTTP or HTTPS proxy
-		transport = &http.Transport{Proxy: http.ProxyURL(parsedURL)}
+		transport = baseTransport.Clone()
+		transport.Proxy = http.ProxyURL(parsedURL)
 	} else {
 		log.Errorf("unsupported proxy scheme: %s", parsedURL.Scheme)
 		return nil
 	}
 
 	return transport
+}
+
+// resetSharedTransportPoolForTests clears shared transport cache.
+func resetSharedTransportPoolForTests() {
+	sharedTransportPool.Range(func(key, value any) bool {
+		sharedTransportPool.Delete(key)
+		return true
+	})
 }

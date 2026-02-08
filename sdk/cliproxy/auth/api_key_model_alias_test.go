@@ -178,3 +178,53 @@ func TestApplyAPIKeyModelAlias(t *testing.T) {
 		})
 	}
 }
+
+func TestApplyAPIKeyModelAlias_PreventCodexDowngrade(t *testing.T) {
+	cfg := &internalconfig.Config{
+		CodexKey: []internalconfig.CodexKey{
+			{
+				APIKey: "codex-key",
+				Models: []internalconfig.CodexModel{
+					{Name: "gpt-5.2-codex", Alias: "gpt-5.3-codex"},
+				},
+			},
+		},
+	}
+
+	mgr := NewManager(nil, nil, nil)
+	mgr.SetConfig(cfg)
+
+	ctx := context.Background()
+	codexAuth := &Auth{ID: "codex-auth", Provider: "codex", Attributes: map[string]string{"api_key": "codex-key"}}
+	_, _ = mgr.Register(ctx, codexAuth)
+
+	resolved := mgr.applyAPIKeyModelAlias(codexAuth, "gpt-5.3-codex(xhigh)")
+	if resolved != "gpt-5.3-codex(xhigh)" {
+		t.Fatalf("expected requested model preserved to avoid downgrade, got %q", resolved)
+	}
+}
+
+func TestApplyAPIKeyModelAlias_AllowCodexSameGeneration(t *testing.T) {
+	cfg := &internalconfig.Config{
+		CodexKey: []internalconfig.CodexKey{
+			{
+				APIKey: "codex-key",
+				Models: []internalconfig.CodexModel{
+					{Name: "gpt-5.3-codex", Alias: "gpt-5.3-codex"},
+				},
+			},
+		},
+	}
+
+	mgr := NewManager(nil, nil, nil)
+	mgr.SetConfig(cfg)
+
+	ctx := context.Background()
+	codexAuth := &Auth{ID: "codex-auth", Provider: "codex", Attributes: map[string]string{"api_key": "codex-key"}}
+	_, _ = mgr.Register(ctx, codexAuth)
+
+	resolved := mgr.applyAPIKeyModelAlias(codexAuth, "gpt-5.3-codex(xhigh)")
+	if resolved != "gpt-5.3-codex(xhigh)" {
+		t.Fatalf("expected gpt-5.3 alias to keep generation and suffix, got %q", resolved)
+	}
+}

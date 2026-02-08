@@ -87,6 +87,8 @@ type WatcherWrapper struct {
 
 	setConfig             func(cfg *config.Config)
 	snapshotAuths         func() []*coreauth.Auth
+	authFileCount         func() int
+	reloadMetrics         func() watcher.ReloadMetricsSnapshot
 	setUpdateQueue        func(queue chan<- watcher.AuthUpdate)
 	dispatchRuntimeUpdate func(update watcher.AuthUpdate) bool
 }
@@ -137,6 +139,22 @@ func (w *WatcherWrapper) SnapshotAuths() []*coreauth.Auth {
 		return nil
 	}
 	return w.snapshotAuths()
+}
+
+// AuthFileCount returns the number of tracked auth files known by the watcher.
+func (w *WatcherWrapper) AuthFileCount() int {
+	if w == nil || w.authFileCount == nil {
+		return -1
+	}
+	return w.authFileCount()
+}
+
+// ReloadMetricsSnapshot returns watcher reload/coalescing counters for observability.
+func (w *WatcherWrapper) ReloadMetricsSnapshot() watcher.ReloadMetricsSnapshot {
+	if w == nil || w.reloadMetrics == nil {
+		return watcher.ReloadMetricsSnapshot{}
+	}
+	return w.reloadMetrics()
 }
 
 // SetAuthUpdateQueue registers the channel used to propagate auth updates.

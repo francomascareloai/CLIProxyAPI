@@ -69,6 +69,22 @@ const (
 	refreshLockStaleAfter = 10 * time.Minute
 )
 
+var adaptiveLatencyBucketsMS = [...]int64{
+	50,
+	100,
+	200,
+	400,
+	800,
+	1200,
+	2000,
+	3000,
+	5000,
+	8000,
+	12000,
+	20000,
+	30000,
+}
+
 var quotaCooldownDisabled atomic.Bool
 
 // SetQuotaCooldownDisabled toggles quota cooldown scheduling globally.
@@ -160,8 +176,63 @@ type Manager struct {
 	// Optional HTTP RoundTripper provider injected by host.
 	rtProvider RoundTripperProvider
 
+	// providerLimiter controls per-provider inflight backpressure.
+	providerLimiterMu sync.Mutex
+	providerLimiter   map[string]chan struct{}
+	// providerAdaptive tracks dynamic inflight window when adaptive limiter is enabled.
+	providerAdaptiveLimit         map[string]int
+	providerAdaptiveSuccessStreak map[string]int
+	providerAdaptiveRollbackUntil map[string]time.Time
+	providerAdaptiveSLOWindow     map[string]*providerAdaptiveSLOState
+	// providerCircuit stores per-provider breaker state.
+	providerCircuitMu sync.Mutex
+	providerCircuit   map[string]*providerCircuitState
+	// providerResilience counters for observability.
+	providerBackpressureCount atomic.Uint64
+	providerCircuitOpenCount  atomic.Uint64
+	providerAdaptiveIncCount  atomic.Uint64
+	providerAdaptiveDecCount  atomic.Uint64
+	providerAdaptiveRollback  atomic.Uint64
+
 	// Auto refresh state
 	refreshCancel context.CancelFunc
+}
+
+type providerResilienceSettings struct {
+	circuitBreakerEnabled bool
+	failureThreshold      int
+	halfOpenMaxRequests   int
+	openStateDuration     time.Duration
+	maxInflight           int
+	adaptiveLimiter       bool
+	adaptiveProviders     map[string]struct{}
+	adaptiveMinInflight   int
+	adaptiveMaxInflight   int
+	adaptiveSuccessWindow int
+	adaptiveAdditiveStep  int
+	adaptiveBackoffFactor float64
+	adaptiveAutoRollback  bool
+	adaptiveRollbackWin   time.Duration
+	adaptiveRollbackMinN  int
+	adaptiveRollbackP95MS int
+	adaptiveRollbackErr   float64
+	adaptiveRollback429   float64
+	adaptiveRollback5xx   float64
+}
+
+type providerCircuitState struct {
+	consecutiveFailures int
+	openUntil           time.Time
+	halfOpenRemaining   int
+}
+
+type providerAdaptiveSLOState struct {
+	windowStart    time.Time
+	samples        uint64
+	errors         uint64
+	http429        uint64
+	http5xx        uint64
+	latencyBuckets [len(adaptiveLatencyBucketsMS)]uint64
 }
 
 // NewManager constructs a manager with optional custom selector and hook.
@@ -173,12 +244,18 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		hook = NoopHook{}
 	}
 	manager := &Manager{
-		store:           store,
-		executors:       make(map[string]ProviderExecutor),
-		selector:        selector,
-		hook:            hook,
-		auths:           make(map[string]*Auth),
-		providerOffsets: make(map[string]int),
+		store:                         store,
+		executors:                     make(map[string]ProviderExecutor),
+		selector:                      selector,
+		hook:                          hook,
+		auths:                         make(map[string]*Auth),
+		providerOffsets:               make(map[string]int),
+		providerLimiter:               make(map[string]chan struct{}),
+		providerAdaptiveLimit:         make(map[string]int),
+		providerAdaptiveSuccessStreak: make(map[string]int),
+		providerAdaptiveRollbackUntil: make(map[string]time.Time),
+		providerAdaptiveSLOWindow:     make(map[string]*providerAdaptiveSLOState),
+		providerCircuit:               make(map[string]*providerCircuitState),
 	}
 	// atomic.Value requires non-nil initial value.
 	manager.runtimeConfig.Store(&internalconfig.Config{})
@@ -601,6 +678,11 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		debugLogAuthSelection(entry, auth, provider, req.Model)
 
 		tried[auth.ID] = struct{}{}
+		releaseProviderPermit, errPermit := m.acquireProviderPermit(provider)
+		if errPermit != nil {
+			lastErr = errPermit
+			continue
+		}
 		execCtx := ctx
 		if rt := m.roundTripperFor(auth); rt != nil {
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
@@ -610,7 +692,11 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		execReq.Model = rewriteModelForAuth(routeModel, auth)
 		execReq.Model = m.applyOAuthModelAlias(auth, execReq.Model)
 		execReq.Model = m.applyAPIKeyModelAlias(auth, execReq.Model)
+		execStartedAt := time.Now()
 		resp, errExec := executor.Execute(execCtx, auth, execReq, opts)
+		execLatency := time.Since(execStartedAt)
+		releaseProviderPermit()
+		m.recordProviderResult(provider, errExec, execLatency)
 		result := Result{AuthID: auth.ID, Provider: provider, Model: routeModel, Success: errExec == nil}
 		if errExec != nil {
 			if errCtx := execCtx.Err(); errCtx != nil {
@@ -658,6 +744,11 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		debugLogAuthSelection(entry, auth, provider, req.Model)
 
 		tried[auth.ID] = struct{}{}
+		releaseProviderPermit, errPermit := m.acquireProviderPermit(provider)
+		if errPermit != nil {
+			lastErr = errPermit
+			continue
+		}
 		execCtx := ctx
 		if rt := m.roundTripperFor(auth); rt != nil {
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
@@ -667,7 +758,11 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		execReq.Model = rewriteModelForAuth(routeModel, auth)
 		execReq.Model = m.applyOAuthModelAlias(auth, execReq.Model)
 		execReq.Model = m.applyAPIKeyModelAlias(auth, execReq.Model)
+		execStartedAt := time.Now()
 		resp, errExec := executor.CountTokens(execCtx, auth, execReq, opts)
+		execLatency := time.Since(execStartedAt)
+		releaseProviderPermit()
+		m.recordProviderResult(provider, errExec, execLatency)
 		result := Result{AuthID: auth.ID, Provider: provider, Model: routeModel, Success: errExec == nil}
 		if errExec != nil {
 			if errCtx := execCtx.Err(); errCtx != nil {
@@ -715,6 +810,11 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		debugLogAuthSelection(entry, auth, provider, req.Model)
 
 		tried[auth.ID] = struct{}{}
+		releaseProviderPermit, errPermit := m.acquireProviderPermit(provider)
+		if errPermit != nil {
+			lastErr = errPermit
+			continue
+		}
 		execCtx := ctx
 		if rt := m.roundTripperFor(auth); rt != nil {
 			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
@@ -724,8 +824,11 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		execReq.Model = rewriteModelForAuth(routeModel, auth)
 		execReq.Model = m.applyOAuthModelAlias(auth, execReq.Model)
 		execReq.Model = m.applyAPIKeyModelAlias(auth, execReq.Model)
+		streamStartedAt := time.Now()
 		chunks, errStream := executor.ExecuteStream(execCtx, auth, execReq, opts)
 		if errStream != nil {
+			releaseProviderPermit()
+			m.recordProviderResult(provider, errStream, time.Since(streamStartedAt))
 			if errCtx := execCtx.Err(); errCtx != nil {
 				return nil, errCtx
 			}
@@ -745,8 +848,9 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			continue
 		}
 		out := make(chan cliproxyexecutor.StreamChunk)
-		go func(streamCtx context.Context, streamAuth *Auth, streamProvider string, streamChunks <-chan cliproxyexecutor.StreamChunk) {
+		go func(streamCtx context.Context, streamAuth *Auth, streamProvider string, streamChunks <-chan cliproxyexecutor.StreamChunk, release func(), startedAt time.Time) {
 			defer close(out)
+			defer release()
 			var failed bool
 			forward := true
 			for chunk := range streamChunks {
@@ -758,6 +862,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 						rerr.HTTPStatus = se.StatusCode()
 					}
 					rerr.Code = extractErrorCode(chunk.Err)
+					m.recordProviderResult(streamProvider, chunk.Err, time.Since(startedAt))
 					m.MarkResult(streamCtx, Result{AuthID: streamAuth.ID, Provider: streamProvider, Model: routeModel, Success: false, Error: rerr})
 				}
 				if !forward {
@@ -774,9 +879,10 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 				}
 			}
 			if !failed {
+				m.recordProviderResult(streamProvider, nil, time.Since(startedAt))
 				m.MarkResult(streamCtx, Result{AuthID: streamAuth.ID, Provider: streamProvider, Model: routeModel, Success: true})
 			}
-		}(execCtx, auth.Clone(), provider, chunks)
+		}(execCtx, auth.Clone(), provider, chunks, releaseProviderPermit, streamStartedAt)
 		return out, nil
 	}
 }
@@ -852,7 +958,7 @@ func (m *Manager) applyAPIKeyModelAlias(auth *Auth, requestedModel string) strin
 
 	// Fast path: lookup per-auth mapping table (keyed by auth.ID).
 	if resolved := m.lookupAPIKeyUpstreamModel(auth.ID, requestedModel); resolved != "" {
-		return resolved
+		return preventCodexDowngrade(requestedModel, resolved)
 	}
 
 	// Slow path: scan config for the matching credential entry and resolve alias.
@@ -879,9 +985,27 @@ func (m *Manager) applyAPIKeyModelAlias(auth *Auth, requestedModel string) strin
 
 	// Return upstream model if found, otherwise return requested model.
 	if upstreamModel != "" {
-		return upstreamModel
+		return preventCodexDowngrade(requestedModel, upstreamModel)
 	}
 	return requestedModel
+}
+
+func preventCodexDowngrade(requestedModel, resolvedModel string) string {
+	requestedModel = strings.TrimSpace(requestedModel)
+	resolvedModel = strings.TrimSpace(resolvedModel)
+	if requestedModel == "" || resolvedModel == "" {
+		if resolvedModel != "" {
+			return resolvedModel
+		}
+		return requestedModel
+	}
+	requestedBase := strings.ToLower(strings.TrimSpace(thinking.ParseSuffix(requestedModel).ModelName))
+	resolvedBase := strings.ToLower(strings.TrimSpace(thinking.ParseSuffix(resolvedModel).ModelName))
+	if strings.HasPrefix(requestedBase, "gpt-5.3-codex") && strings.HasPrefix(resolvedBase, "gpt-5.2-codex") {
+		log.Warnf("blocked codex model downgrade: requested=%s resolved=%s", requestedModel, resolvedModel)
+		return requestedModel
+	}
+	return resolvedModel
 }
 
 // APIKeyConfigEntry is a generic interface for API key configurations.
@@ -1074,6 +1198,425 @@ func (m *Manager) retrySettings() (int, time.Duration) {
 	return int(m.requestRetry.Load()), time.Duration(m.maxRetryInterval.Load())
 }
 
+func (m *Manager) providerResilienceSettings() providerResilienceSettings {
+	settings := providerResilienceSettings{
+		circuitBreakerEnabled: true,
+		failureThreshold:      internalconfig.DefaultProviderCBThreshold,
+		halfOpenMaxRequests:   internalconfig.DefaultProviderHalfOpenMax,
+		openStateDuration:     time.Duration(internalconfig.DefaultProviderOpenStateMS) * time.Millisecond,
+		maxInflight:           internalconfig.DefaultProviderMaxInFlight,
+		adaptiveLimiter:       false,
+		adaptiveMinInflight:   internalconfig.DefaultProviderAdaptiveMin,
+		adaptiveMaxInflight:   internalconfig.DefaultProviderAdaptiveMax,
+		adaptiveSuccessWindow: internalconfig.DefaultProviderAdaptiveWin,
+		adaptiveAdditiveStep:  internalconfig.DefaultProviderAdaptiveStep,
+		adaptiveBackoffFactor: internalconfig.DefaultProviderAdaptiveDecay,
+		adaptiveAutoRollback:  false,
+		adaptiveRollbackWin:   time.Duration(internalconfig.DefaultAdaptiveRollbackWinMS) * time.Millisecond,
+		adaptiveRollbackMinN:  internalconfig.DefaultAdaptiveRollbackMinN,
+		adaptiveRollbackP95MS: internalconfig.DefaultAdaptiveRollbackP95MS,
+		adaptiveRollbackErr:   internalconfig.DefaultAdaptiveRollbackErr,
+		adaptiveRollback429:   internalconfig.DefaultAdaptiveRollback429,
+		adaptiveRollback5xx:   internalconfig.DefaultAdaptiveRollback5xx,
+	}
+	if m == nil {
+		return settings
+	}
+	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
+	if cfg == nil {
+		return settings
+	}
+	settings.circuitBreakerEnabled = cfg.ProviderResilience.CircuitBreakerEnabled
+	if cfg.ProviderResilience.FailureThreshold > 0 {
+		settings.failureThreshold = cfg.ProviderResilience.FailureThreshold
+	}
+	if cfg.ProviderResilience.HalfOpenMaxRequests > 0 {
+		settings.halfOpenMaxRequests = cfg.ProviderResilience.HalfOpenMaxRequests
+	}
+	if cfg.ProviderResilience.OpenStateMS > 0 {
+		settings.openStateDuration = time.Duration(cfg.ProviderResilience.OpenStateMS) * time.Millisecond
+	}
+	if cfg.ProviderResilience.MaxInflightPerProvider > 0 {
+		settings.maxInflight = cfg.ProviderResilience.MaxInflightPerProvider
+	}
+	settings.adaptiveLimiter = cfg.ProviderResilience.AdaptiveLimiterEnabled
+	if len(cfg.ProviderResilience.AdaptiveProviders) > 0 {
+		settings.adaptiveProviders = make(map[string]struct{}, len(cfg.ProviderResilience.AdaptiveProviders))
+		for _, provider := range cfg.ProviderResilience.AdaptiveProviders {
+			key := strings.TrimSpace(strings.ToLower(provider))
+			if key == "" {
+				continue
+			}
+			settings.adaptiveProviders[key] = struct{}{}
+		}
+	}
+	if cfg.ProviderResilience.AdaptiveMinInflight > 0 {
+		settings.adaptiveMinInflight = cfg.ProviderResilience.AdaptiveMinInflight
+	}
+	if cfg.ProviderResilience.AdaptiveMaxInflight > 0 {
+		settings.adaptiveMaxInflight = cfg.ProviderResilience.AdaptiveMaxInflight
+	}
+	if cfg.ProviderResilience.AdaptiveSuccessWindow > 0 {
+		settings.adaptiveSuccessWindow = cfg.ProviderResilience.AdaptiveSuccessWindow
+	}
+	if cfg.ProviderResilience.AdaptiveAdditiveStep > 0 {
+		settings.adaptiveAdditiveStep = cfg.ProviderResilience.AdaptiveAdditiveStep
+	}
+	if cfg.ProviderResilience.AdaptiveBackoffFactor > 0 && cfg.ProviderResilience.AdaptiveBackoffFactor < 1 {
+		settings.adaptiveBackoffFactor = cfg.ProviderResilience.AdaptiveBackoffFactor
+	}
+	settings.adaptiveAutoRollback = cfg.ProviderResilience.AdaptiveAutoRollbackEnabled
+	if cfg.ProviderResilience.AdaptiveAutoRollbackWindowMS > 0 {
+		settings.adaptiveRollbackWin = time.Duration(cfg.ProviderResilience.AdaptiveAutoRollbackWindowMS) * time.Millisecond
+	}
+	if cfg.ProviderResilience.AdaptiveAutoRollbackMinSamples > 0 {
+		settings.adaptiveRollbackMinN = cfg.ProviderResilience.AdaptiveAutoRollbackMinSamples
+	}
+	if cfg.ProviderResilience.AdaptiveAutoRollbackMaxP95MS > 0 {
+		settings.adaptiveRollbackP95MS = cfg.ProviderResilience.AdaptiveAutoRollbackMaxP95MS
+	}
+	if cfg.ProviderResilience.AdaptiveAutoRollbackMaxErrRate > 0 && cfg.ProviderResilience.AdaptiveAutoRollbackMaxErrRate < 1 {
+		settings.adaptiveRollbackErr = cfg.ProviderResilience.AdaptiveAutoRollbackMaxErrRate
+	}
+	if cfg.ProviderResilience.AdaptiveAutoRollbackMax429Rate > 0 && cfg.ProviderResilience.AdaptiveAutoRollbackMax429Rate < 1 {
+		settings.adaptiveRollback429 = cfg.ProviderResilience.AdaptiveAutoRollbackMax429Rate
+	}
+	if cfg.ProviderResilience.AdaptiveAutoRollbackMax5xxRate > 0 && cfg.ProviderResilience.AdaptiveAutoRollbackMax5xxRate < 1 {
+		settings.adaptiveRollback5xx = cfg.ProviderResilience.AdaptiveAutoRollbackMax5xxRate
+	}
+	if settings.adaptiveMinInflight < 1 {
+		settings.adaptiveMinInflight = 1
+	}
+	if settings.adaptiveMaxInflight <= 0 || settings.adaptiveMaxInflight > settings.maxInflight {
+		settings.adaptiveMaxInflight = settings.maxInflight
+	}
+	if settings.adaptiveMaxInflight < settings.adaptiveMinInflight {
+		settings.adaptiveMaxInflight = settings.adaptiveMinInflight
+	}
+	return settings
+}
+
+func (s providerResilienceSettings) adaptiveLimiterEnabledForProvider(provider string) bool {
+	if !s.adaptiveLimiter {
+		return false
+	}
+	if len(s.adaptiveProviders) == 0 {
+		return true
+	}
+	_, ok := s.adaptiveProviders[provider]
+	return ok
+}
+
+func (m *Manager) adaptiveLimiterEnabledForProviderLocked(provider string, settings providerResilienceSettings, now time.Time) bool {
+	if !settings.adaptiveLimiterEnabledForProvider(provider) {
+		return false
+	}
+	until, ok := m.providerAdaptiveRollbackUntil[provider]
+	if !ok {
+		return true
+	}
+	if now.Before(until) {
+		return false
+	}
+	delete(m.providerAdaptiveRollbackUntil, provider)
+	return true
+}
+
+func (m *Manager) adaptiveInflightLimitLocked(provider string, settings providerResilienceSettings) int {
+	if !settings.adaptiveLimiter {
+		return settings.maxInflight
+	}
+	limit := m.providerAdaptiveLimit[provider]
+	if limit <= 0 {
+		limit = settings.adaptiveMaxInflight
+	}
+	if limit < settings.adaptiveMinInflight {
+		limit = settings.adaptiveMinInflight
+	}
+	if limit > settings.adaptiveMaxInflight {
+		limit = settings.adaptiveMaxInflight
+	}
+	m.providerAdaptiveLimit[provider] = limit
+	return limit
+}
+
+func shouldAdaptiveBackoffFromError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if isRequestInvalidError(err) {
+		return false
+	}
+	status := statusCodeFromError(err)
+	switch status {
+	case http.StatusBadRequest, http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusForbidden, http.StatusNotFound:
+		return false
+	case http.StatusTooManyRequests, http.StatusRequestTimeout, http.StatusTooEarly,
+		http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	}
+	// Unknown status (transport/network errors) -> conservative backoff.
+	if status <= 0 {
+		return true
+	}
+	return false
+}
+
+func adaptiveLatencyBucketIndex(latency time.Duration) int {
+	if latency < 0 {
+		latency = 0
+	}
+	latencyMS := latency.Milliseconds()
+	for i := range adaptiveLatencyBucketsMS {
+		if latencyMS <= adaptiveLatencyBucketsMS[i] {
+			return i
+		}
+	}
+	return len(adaptiveLatencyBucketsMS) - 1
+}
+
+func adaptiveWindowP95MS(state *providerAdaptiveSLOState) int {
+	if state == nil || state.samples == 0 {
+		return 0
+	}
+	target := (95*state.samples + 99) / 100
+	var cumulative uint64
+	for i := range state.latencyBuckets {
+		cumulative += state.latencyBuckets[i]
+		if cumulative >= target {
+			return int(adaptiveLatencyBucketsMS[i])
+		}
+	}
+	return int(adaptiveLatencyBucketsMS[len(adaptiveLatencyBucketsMS)-1])
+}
+
+func (m *Manager) evaluateAdaptiveRollbackLocked(provider string, settings providerResilienceSettings, err error, latency time.Duration, now time.Time) {
+	if !settings.adaptiveAutoRollback || settings.adaptiveRollbackWin <= 0 {
+		return
+	}
+	state := m.providerAdaptiveSLOWindow[provider]
+	if state == nil || now.Sub(state.windowStart) >= settings.adaptiveRollbackWin {
+		state = &providerAdaptiveSLOState{
+			windowStart: now,
+		}
+		m.providerAdaptiveSLOWindow[provider] = state
+	}
+
+	state.samples++
+	if err != nil {
+		state.errors++
+	}
+	status := statusCodeFromError(err)
+	if status == http.StatusTooManyRequests {
+		state.http429++
+	}
+	if status >= 500 && status <= 599 {
+		state.http5xx++
+	}
+	state.latencyBuckets[adaptiveLatencyBucketIndex(latency)]++
+
+	if int(state.samples) < settings.adaptiveRollbackMinN {
+		return
+	}
+
+	samples := float64(state.samples)
+	errRate := float64(state.errors) / samples
+	http429Rate := float64(state.http429) / samples
+	http5xxRate := float64(state.http5xx) / samples
+	p95MS := adaptiveWindowP95MS(state)
+
+	if p95MS <= settings.adaptiveRollbackP95MS &&
+		errRate <= settings.adaptiveRollbackErr &&
+		http429Rate <= settings.adaptiveRollback429 &&
+		http5xxRate <= settings.adaptiveRollback5xx {
+		return
+	}
+
+	m.providerAdaptiveRollbackUntil[provider] = now.Add(settings.adaptiveRollbackWin)
+	delete(m.providerAdaptiveLimit, provider)
+	delete(m.providerAdaptiveSuccessStreak, provider)
+	delete(m.providerAdaptiveSLOWindow, provider)
+	m.providerAdaptiveRollback.Add(1)
+
+	log.Warnf(
+		"adaptive limiter rollback triggered for provider=%s (p95_ms=%d err_rate=%.3f http429_rate=%.3f http5xx_rate=%.3f hold_ms=%d)",
+		provider,
+		p95MS,
+		errRate,
+		http429Rate,
+		http5xxRate,
+		settings.adaptiveRollbackWin.Milliseconds(),
+	)
+}
+
+func (m *Manager) acquireProviderPermit(provider string) (func(), error) {
+	if m == nil {
+		return func() {}, nil
+	}
+	settings := m.providerResilienceSettings()
+	provider = strings.TrimSpace(strings.ToLower(provider))
+	if provider == "" {
+		return func() {}, nil
+	}
+	if settings.circuitBreakerEnabled {
+		now := time.Now()
+		m.providerCircuitMu.Lock()
+		state := m.providerCircuit[provider]
+		if state == nil {
+			state = &providerCircuitState{}
+			m.providerCircuit[provider] = state
+		}
+		if !state.openUntil.IsZero() {
+			if state.openUntil.After(now) {
+				m.providerCircuitMu.Unlock()
+				m.providerCircuitOpenCount.Add(1)
+				return nil, &Error{
+					Code:       "provider_circuit_open",
+					Message:    "provider circuit breaker is open",
+					Retryable:  true,
+					HTTPStatus: http.StatusServiceUnavailable,
+				}
+			}
+			if state.halfOpenRemaining <= 0 {
+				state.halfOpenRemaining = settings.halfOpenMaxRequests
+			}
+			if state.halfOpenRemaining > 0 {
+				state.halfOpenRemaining--
+			}
+		}
+		m.providerCircuitMu.Unlock()
+	}
+
+	if settings.maxInflight <= 0 {
+		return func() {}, nil
+	}
+	m.providerLimiterMu.Lock()
+	limiter := m.providerLimiter[provider]
+	if limiter == nil {
+		limiter = make(chan struct{}, settings.maxInflight)
+		m.providerLimiter[provider] = limiter
+	} else if cap(limiter) != settings.maxInflight {
+		limiter = make(chan struct{}, settings.maxInflight)
+		m.providerLimiter[provider] = limiter
+		delete(m.providerAdaptiveLimit, provider)
+		delete(m.providerAdaptiveSuccessStreak, provider)
+	}
+	currentInflightLimit := settings.maxInflight
+	if m.adaptiveLimiterEnabledForProviderLocked(provider, settings, time.Now()) {
+		currentInflightLimit = m.adaptiveInflightLimitLocked(provider, settings)
+	}
+	if len(limiter) >= currentInflightLimit {
+		m.providerBackpressureCount.Add(1)
+		m.providerLimiterMu.Unlock()
+		return nil, &Error{
+			Code:       "provider_backpressure",
+			Message:    "provider inflight limit exceeded",
+			Retryable:  true,
+			HTTPStatus: http.StatusServiceUnavailable,
+		}
+	}
+	select {
+	case limiter <- struct{}{}:
+		m.providerLimiterMu.Unlock()
+		return func() {
+			select {
+			case <-limiter:
+			default:
+			}
+		}, nil
+	default:
+		m.providerLimiterMu.Unlock()
+		m.providerBackpressureCount.Add(1)
+		return nil, &Error{
+			Code:       "provider_backpressure",
+			Message:    "provider inflight limit exceeded",
+			Retryable:  true,
+			HTTPStatus: http.StatusServiceUnavailable,
+		}
+	}
+}
+
+func (m *Manager) recordProviderResult(provider string, err error, latency time.Duration) {
+	if m == nil {
+		return
+	}
+	settings := m.providerResilienceSettings()
+	provider = strings.TrimSpace(strings.ToLower(provider))
+	if provider == "" {
+		return
+	}
+	now := time.Now()
+
+	if settings.circuitBreakerEnabled {
+		m.providerCircuitMu.Lock()
+		state := m.providerCircuit[provider]
+		if state == nil {
+			state = &providerCircuitState{}
+			m.providerCircuit[provider] = state
+		}
+		if err == nil {
+			state.consecutiveFailures = 0
+			state.openUntil = time.Time{}
+			state.halfOpenRemaining = 0
+		} else if !isRequestInvalidError(err) {
+			status := statusCodeFromError(err)
+			if status != http.StatusBadRequest {
+				state.consecutiveFailures++
+				if state.consecutiveFailures >= settings.failureThreshold {
+					state.openUntil = now.Add(settings.openStateDuration)
+					state.halfOpenRemaining = 0
+				}
+			}
+		}
+		m.providerCircuitMu.Unlock()
+	}
+
+	if !m.adaptiveLimiterEnabledForProviderLocked(provider, settings, now) {
+		return
+	}
+
+	m.providerLimiterMu.Lock()
+	defer m.providerLimiterMu.Unlock()
+	current := m.adaptiveInflightLimitLocked(provider, settings)
+	if err == nil {
+		streak := m.providerAdaptiveSuccessStreak[provider] + 1
+		if streak >= settings.adaptiveSuccessWindow {
+			next := current + settings.adaptiveAdditiveStep
+			if next > settings.adaptiveMaxInflight {
+				next = settings.adaptiveMaxInflight
+			}
+			if next > current {
+				current = next
+				m.providerAdaptiveIncCount.Add(1)
+			}
+			streak = 0
+		}
+		m.providerAdaptiveSuccessStreak[provider] = streak
+		m.providerAdaptiveLimit[provider] = current
+		m.evaluateAdaptiveRollbackLocked(provider, settings, nil, latency, now)
+		return
+	}
+
+	m.providerAdaptiveSuccessStreak[provider] = 0
+	if !shouldAdaptiveBackoffFromError(err) {
+		m.providerAdaptiveLimit[provider] = current
+		m.evaluateAdaptiveRollbackLocked(provider, settings, err, latency, now)
+		return
+	}
+	next := int(float64(current) * settings.adaptiveBackoffFactor)
+	if next >= current {
+		next = current - 1
+	}
+	if next < settings.adaptiveMinInflight {
+		next = settings.adaptiveMinInflight
+	}
+	if next < current {
+		m.providerAdaptiveDecCount.Add(1)
+	}
+	m.providerAdaptiveLimit[provider] = next
+	m.evaluateAdaptiveRollbackLocked(provider, settings, err, latency, now)
+}
+
 func (m *Manager) closestCooldownWait(providers []string, model string, attempt int) (time.Duration, bool) {
 	if m == nil || len(providers) == 0 {
 		return 0, false
@@ -1210,70 +1753,70 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					auth.StatusMessage = result.Error.Message
 				}
 
-					if isDeactivatedWorkspaceError(result.Error) {
-						// Permanent workspace deactivation: disable the entire auth so it stops being selected.
-						state.Status = StatusDisabled
-						state.Unavailable = true
-						state.NextRetryAfter = now.Add(deactivatedWorkspaceBackoff)
-						quarantineAuth(auth, now, result.Error, StatusDisabled, "deactivated_workspace", deactivatedWorkspaceBackoff)
-						updateAggregatedAvailability(auth, now)
-						suspendReason = "deactivated_workspace"
+				if isDeactivatedWorkspaceError(result.Error) {
+					// Permanent workspace deactivation: disable the entire auth so it stops being selected.
+					state.Status = StatusDisabled
+					state.Unavailable = true
+					state.NextRetryAfter = now.Add(deactivatedWorkspaceBackoff)
+					quarantineAuth(auth, now, result.Error, StatusDisabled, "deactivated_workspace", deactivatedWorkspaceBackoff)
+					updateAggregatedAvailability(auth, now)
+					suspendReason = "deactivated_workspace"
+					shouldSuspendModel = true
+				} else {
+					statusCode := statusCodeFromResult(result.Error)
+					switch statusCode {
+					case 401:
+						next := now.Add(30 * time.Minute)
+						state.NextRetryAfter = next
+						suspendReason = "unauthorized"
 						shouldSuspendModel = true
-					} else {
-						statusCode := statusCodeFromResult(result.Error)
-						switch statusCode {
-						case 401:
-							next := now.Add(30 * time.Minute)
-							state.NextRetryAfter = next
-							suspendReason = "unauthorized"
-							shouldSuspendModel = true
-						case 402, 403:
-							next := now.Add(30 * time.Minute)
-							state.NextRetryAfter = next
-							suspendReason = "payment_required"
-							shouldSuspendModel = true
-						case 404:
-							next := now.Add(12 * time.Hour)
-							state.NextRetryAfter = next
-							suspendReason = "not_found"
-							shouldSuspendModel = true
-						case 429:
-							var next time.Time
-							backoffLevel := state.Quota.BackoffLevel
-							if result.RetryAfter != nil {
-								next = now.Add(*result.RetryAfter)
-							} else {
-								cooldown, nextLevel := nextQuotaCooldown(backoffLevel, quotaCooldownDisabledForAuth(auth))
-								if cooldown > 0 {
-									next = now.Add(cooldown)
-								}
-								backoffLevel = nextLevel
+					case 402, 403:
+						next := now.Add(30 * time.Minute)
+						state.NextRetryAfter = next
+						suspendReason = "payment_required"
+						shouldSuspendModel = true
+					case 404:
+						next := now.Add(12 * time.Hour)
+						state.NextRetryAfter = next
+						suspendReason = "not_found"
+						shouldSuspendModel = true
+					case 429:
+						var next time.Time
+						backoffLevel := state.Quota.BackoffLevel
+						if result.RetryAfter != nil {
+							next = now.Add(*result.RetryAfter)
+						} else {
+							cooldown, nextLevel := nextQuotaCooldown(backoffLevel, quotaCooldownDisabledForAuth(auth))
+							if cooldown > 0 {
+								next = now.Add(cooldown)
 							}
-							state.NextRetryAfter = next
-							state.Quota = QuotaState{
-								Exceeded:      true,
-								Reason:        "quota",
-								NextRecoverAt: next,
-								BackoffLevel:  backoffLevel,
-							}
-							suspendReason = "quota"
-							shouldSuspendModel = true
-							setModelQuota = true
-						case 408, 500, 502, 503, 504:
-							if quotaCooldownDisabledForAuth(auth) {
-								state.NextRetryAfter = time.Time{}
-							} else {
-								next := now.Add(1 * time.Minute)
-								state.NextRetryAfter = next
-							}
-						default:
-							state.NextRetryAfter = time.Time{}
+							backoffLevel = nextLevel
 						}
-
-						auth.Status = StatusError
-						auth.UpdatedAt = now
-						updateAggregatedAvailability(auth, now)
+						state.NextRetryAfter = next
+						state.Quota = QuotaState{
+							Exceeded:      true,
+							Reason:        "quota",
+							NextRecoverAt: next,
+							BackoffLevel:  backoffLevel,
+						}
+						suspendReason = "quota"
+						shouldSuspendModel = true
+						setModelQuota = true
+					case 408, 500, 502, 503, 504:
+						if quotaCooldownDisabledForAuth(auth) {
+							state.NextRetryAfter = time.Time{}
+						} else {
+							next := now.Add(1 * time.Minute)
+							state.NextRetryAfter = next
+						}
+					default:
+						state.NextRetryAfter = time.Time{}
 					}
+
+					auth.Status = StatusError
+					auth.UpdatedAt = now
+					updateAggregatedAvailability(auth, now)
+				}
 			} else {
 				applyAuthFailureState(auth, result.Error, result.RetryAfter, now)
 			}
@@ -1733,6 +2276,47 @@ func (m *Manager) List() []*Auth {
 		list = append(list, auth.Clone())
 	}
 	return list
+}
+
+// ResilienceMetricsSnapshot returns provider resilience counters for observability.
+func (m *Manager) ResilienceMetricsSnapshot() map[string]uint64 {
+	if m == nil {
+		return nil
+	}
+	m.providerLimiterMu.Lock()
+	var adaptiveLimitSum uint64
+	for _, limit := range m.providerAdaptiveLimit {
+		if limit > 0 {
+			adaptiveLimitSum += uint64(limit)
+		}
+	}
+	adaptiveProviders := uint64(len(m.providerAdaptiveLimit))
+	now := time.Now()
+	var adaptiveRollbackActive uint64
+	for provider, until := range m.providerAdaptiveRollbackUntil {
+		if now.Before(until) {
+			adaptiveRollbackActive++
+			continue
+		}
+		delete(m.providerAdaptiveRollbackUntil, provider)
+	}
+	m.providerLimiterMu.Unlock()
+	settings := m.providerResilienceSettings()
+	adaptiveEnabled := uint64(0)
+	if settings.adaptiveLimiter {
+		adaptiveEnabled = 1
+	}
+	return map[string]uint64{
+		"cliproxy_provider_backpressure_reject_total": m.providerBackpressureCount.Load(),
+		"cliproxy_provider_circuit_open_total":        m.providerCircuitOpenCount.Load(),
+		"cliproxy_provider_adaptive_increase_total":   m.providerAdaptiveIncCount.Load(),
+		"cliproxy_provider_adaptive_decrease_total":   m.providerAdaptiveDecCount.Load(),
+		"cliproxy_provider_adaptive_limit_sum":        adaptiveLimitSum,
+		"cliproxy_provider_adaptive_provider_count":   adaptiveProviders,
+		"cliproxy_provider_adaptive_enabled":          adaptiveEnabled,
+		"cliproxy_provider_adaptive_rollback_total":   m.providerAdaptiveRollback.Load(),
+		"cliproxy_provider_adaptive_rollback_active":  adaptiveRollbackActive,
+	}
 }
 
 // GetByID retrieves an auth entry by its ID.

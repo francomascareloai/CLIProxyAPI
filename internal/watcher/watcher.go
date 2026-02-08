@@ -4,8 +4,10 @@ package watcher
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -35,9 +37,13 @@ type Watcher struct {
 	clientsMutex      sync.RWMutex
 	configReloadMu    sync.Mutex
 	configReloadTimer *time.Timer
+	authReloadMu      sync.Mutex
+	authReloadTimer   *time.Timer
+	authReloadQueued  time.Time
 	reloadCallback    func(*config.Config)
 	watcher           *fsnotify.Watcher
 	lastAuthHashes    map[string]string
+	lastAuthStats     map[string]authFileStat
 	lastAuthContents  map[string]*coreauth.Auth
 	lastRemoveTimes   map[string]time.Time
 	lastConfigHash    string
@@ -52,6 +58,32 @@ type Watcher struct {
 	storePersister    storePersister
 	mirroredAuthDir   string
 	oldConfigYaml     []byte
+	reloadMetrics     watcherReloadMetrics
+}
+
+type watcherReloadMetrics struct {
+	configRequested atomic.Uint64
+	configExecuted  atomic.Uint64
+	configCoalesced atomic.Uint64
+	authRequested   atomic.Uint64
+	authExecuted    atomic.Uint64
+	authCoalesced   atomic.Uint64
+}
+
+// ReloadMetricsSnapshot is a lightweight view of reload and coalescing counters.
+type ReloadMetricsSnapshot struct {
+	ConfigRequested uint64
+	ConfigExecuted  uint64
+	ConfigCoalesced uint64
+	AuthRequested   uint64
+	AuthExecuted    uint64
+	AuthCoalesced   uint64
+}
+
+type authFileStat struct {
+	size        int64
+	modTimeUnix int64
+	seenAtUnix  int64
 }
 
 // AuthUpdateAction represents the type of change detected in auth sources.
@@ -75,8 +107,24 @@ const (
 	// before deciding whether a Remove event indicates a real deletion.
 	replaceCheckDelay        = 50 * time.Millisecond
 	configReloadDebounce     = 150 * time.Millisecond
+	authReloadDebounce       = 250 * time.Millisecond
+	authReloadMaxCoalesce    = 1 * time.Second
 	authRemoveDebounceWindow = 1 * time.Second
+	authStatDedupWindow      = 400 * time.Millisecond
 )
+
+var ignoredAuthJSONBaseNames = map[string]struct{}{
+	"usage_statistics.json": {},
+}
+
+func isWatchedAuthJSONPath(path string) bool {
+	base := strings.ToLower(strings.TrimSpace(filepath.Base(path)))
+	if !strings.HasSuffix(base, ".json") {
+		return false
+	}
+	_, ignored := ignoredAuthJSONBaseNames[base]
+	return !ignored
+}
 
 // NewWatcher creates a new file watcher instance
 func NewWatcher(configPath, authDir string, reloadCallback func(*config.Config)) (*Watcher, error) {
@@ -90,6 +138,7 @@ func NewWatcher(configPath, authDir string, reloadCallback func(*config.Config))
 		reloadCallback: reloadCallback,
 		watcher:        watcher,
 		lastAuthHashes: make(map[string]string),
+		lastAuthStats:  make(map[string]authFileStat),
 	}
 	w.dispatchCond = sync.NewCond(&w.dispatchMu)
 	if store := sdkAuth.GetTokenStore(); store != nil {
@@ -116,6 +165,7 @@ func (w *Watcher) Start(ctx context.Context) error {
 func (w *Watcher) Stop() error {
 	w.stopDispatch()
 	w.stopConfigReloadTimer()
+	w.stopAuthReloadTimer()
 	return w.watcher.Close()
 }
 
@@ -145,4 +195,26 @@ func (w *Watcher) SnapshotCoreAuths() []*coreauth.Auth {
 	cfg := w.config
 	w.clientsMutex.RUnlock()
 	return snapshotCoreAuths(cfg, w.authDir)
+}
+
+// AuthFileCount returns the current number of tracked JSON auth files.
+func (w *Watcher) AuthFileCount() int {
+	w.clientsMutex.RLock()
+	defer w.clientsMutex.RUnlock()
+	return len(w.lastAuthHashes)
+}
+
+// ReloadMetricsSnapshot returns current reload counters for observability and profiling.
+func (w *Watcher) ReloadMetricsSnapshot() ReloadMetricsSnapshot {
+	if w == nil {
+		return ReloadMetricsSnapshot{}
+	}
+	return ReloadMetricsSnapshot{
+		ConfigRequested: w.reloadMetrics.configRequested.Load(),
+		ConfigExecuted:  w.reloadMetrics.configExecuted.Load(),
+		ConfigCoalesced: w.reloadMetrics.configCoalesced.Load(),
+		AuthRequested:   w.reloadMetrics.authRequested.Load(),
+		AuthExecuted:    w.reloadMetrics.authExecuted.Load(),
+		AuthCoalesced:   w.reloadMetrics.authCoalesced.Load(),
+	}
 }

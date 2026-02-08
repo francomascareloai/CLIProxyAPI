@@ -84,6 +84,62 @@ CLIProxyAPI includes integrated support for [Amp CLI](https://ampcode.com) and A
 - Watcher: [docs/sdk-watcher.md](docs/sdk-watcher.md)
 - Custom Provider Example: `examples/custom-provider`
 
+## Performance Gate
+
+To prevent performance regressions in reload-heavy scenarios, run:
+
+```bash
+./test/perf_gate.sh
+```
+
+The gate is self-contained (local temporary config/auth dir, no external provider required) and validates:
+
+- Idle reload churn
+- Burst auth-write reload churn
+- `/v1/models` latency under churn (avg + p95)
+
+Thresholds are configurable through environment variables (examples):
+
+```bash
+PERF_GATE_MAX_BURST_UPDATES=2 PERF_GATE_MAX_MODELS_P95_MS=250 ./test/perf_gate.sh
+```
+
+For per-commit benchmark regression checks (fixed baseline in repo), run:
+
+```bash
+./test/bench_regression.sh
+```
+
+To (re)generate baseline after an intentional performance change:
+
+```bash
+BENCH_UPDATE_BASELINE=1 ./test/bench_regression.sh
+```
+
+Latest runtime optimizations include:
+
+- Hash-based config reload decisions for lower CPU overhead during watcher callbacks
+- Versioned `/v1/models` response cache (OpenAI/Claude buckets, invalidated on config/auth snapshot updates)
+- Shared upstream HTTP transport pooling with configurable keepalive/timeout limits (`upstream-http`)
+- Optional adaptive per-provider inflight limiter (AIMD-like canary via `provider-resilience.adaptive-*`) to reduce CPU thrash under upstream degradation
+- Optional adaptive canary auto-rollback guardrails by SLO (`provider-resilience.adaptive-auto-rollback-*`) to disable adaptive mode on degraded providers
+- Auth watcher precheck by `mtime+size` to skip redundant file reads on noisy fsnotify bursts
+- Reload churn counters exposed through SDK watcher metrics snapshot
+- Prometheus `/metrics` endpoint for cache/update/churn counters (runtime provider, lightweight scrape path)
+- Auto profile capture (heap/goroutine `.pprof`) on latency/status spikes (`auto-profile`) with cooldown + file pruning
+
+For long-run reliability validation (24/7 style), run:
+
+```bash
+SOAK_DURATION_SEC=86400 ./test/soak_24h.sh
+```
+
+The soak script can also generate heap profile diffs automatically (`go tool pprof`) and gate memory growth:
+
+```bash
+SOAK_DURATION_SEC=3600 SOAK_ENABLE_PPROF_DIFF=1 ./test/soak_24h.sh
+```
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.

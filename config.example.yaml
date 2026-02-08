@@ -45,6 +45,19 @@ pprof:
   enable: false
   addr: "127.0.0.1:8316"
 
+# Auto profile capture (heap + goroutine) on latency/error spikes.
+# Use in production only for incident diagnostics; profiles are written under output-dir.
+auto-profile:
+  enable: false
+  # Leave empty to use default "<writable>/profiles/auto".
+  output-dir: ""
+  latency-threshold-ms: 20000
+  cooldown-ms: 300000
+  # Max .pprof files kept in output-dir (oldest are pruned).
+  max-files: 50
+  # Capture profile if response status is in this list.
+  trigger-statuses: [429, 500, 502, 503, 504]
+
 # When true, disable high-overhead HTTP middleware features to reduce per-request memory usage under high concurrency.
 commercial-mode: false
 
@@ -73,6 +86,59 @@ request-retry: 3
 
 # Maximum wait time in seconds for a cooled-down credential before triggering a retry.
 max-retry-interval: 30
+
+# Debounce window (ms) for auth file watcher updates.
+# Lower values react faster; higher values reduce churn under bursty file events.
+auth-reload-debounce-ms: 250
+
+# Maximum coalescing window (ms) for auth watcher updates before forcing one reload callback.
+# Must be >= auth-reload-debounce-ms.
+auth-reload-max-coalesce-ms: 1000
+
+# /v1/models cache behavior.
+models-cache:
+  # "versioned" (default): invalidate on config/auth snapshot updates (recommended for 24/7).
+  # "ttl_legacy": fallback TTL behavior.
+  strategy: "versioned"
+  # Used only when strategy == "ttl_legacy".
+  ttl-ms: 300
+
+# Shared upstream HTTP transport tuning.
+upstream-http:
+  max-idle-conns: 256
+  max-idle-conns-per-host: 64
+  max-conns-per-host: 128
+  idle-conn-timeout-ms: 90000
+  tls-handshake-timeout-ms: 10000
+  response-header-timeout-ms: 20000
+  expect-continue-timeout-ms: 1000
+  disable-keepalives: false
+
+# Provider-level resilience guardrails.
+provider-resilience:
+  circuit-breaker-enabled: true
+  failure-threshold: 5
+  half-open-max-requests: 2
+  open-state-ms: 30000
+  max-inflight-per-provider: 256
+  # Canary mode: adaptive inflight limiter (AIMD-like).
+  # Empty/omitted list = all providers. Set explicit providers for controlled canary.
+  # Example: ["codex"].
+  adaptive-limiter-enabled: false
+  adaptive-providers: []
+  adaptive-min-inflight: 1
+  adaptive-max-inflight: 256
+  adaptive-success-window: 8
+  adaptive-additive-step: 1
+  adaptive-backoff-factor: 0.70
+  # Canary guardrail: disable adaptive limiter for a provider when SLO degrades.
+  adaptive-auto-rollback-enabled: false
+  adaptive-auto-rollback-window-ms: 60000
+  adaptive-auto-rollback-min-samples: 40
+  adaptive-auto-rollback-max-p95-ms: 2000
+  adaptive-auto-rollback-max-error-rate: 0.15
+  adaptive-auto-rollback-max-http429-rate: 0.08
+  adaptive-auto-rollback-max-http5xx-rate: 0.15
 
 # Quota exceeded behavior
 quota-exceeded:

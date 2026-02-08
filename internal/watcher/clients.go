@@ -74,6 +74,7 @@ func (w *Watcher) reloadClients(rescanAuth bool, affectedOAuthProviders []string
 		w.clientsMutex.Lock()
 
 		w.lastAuthHashes = make(map[string]string)
+		w.lastAuthStats = make(map[string]authFileStat)
 		w.lastAuthContents = make(map[string]*coreauth.Auth)
 		if resolvedAuthDir, errResolveAuthDir := util.ResolveAuthDir(cfg.AuthDir); errResolveAuthDir != nil {
 			log.Errorf("failed to resolve auth directory for hash cache: %v", errResolveAuthDir)
@@ -82,10 +83,15 @@ func (w *Watcher) reloadClients(rescanAuth bool, affectedOAuthProviders []string
 				if err != nil {
 					return nil
 				}
-				if !info.IsDir() && strings.HasSuffix(strings.ToLower(info.Name()), ".json") {
+				if !info.IsDir() && isWatchedAuthJSONPath(path) {
+					normalizedPath := w.normalizeAuthPath(path)
+					w.lastAuthStats[normalizedPath] = authFileStat{
+						size:        info.Size(),
+						modTimeUnix: info.ModTime().UnixNano(),
+						seenAtUnix:  0,
+					}
 					if data, errReadFile := os.ReadFile(path); errReadFile == nil && len(data) > 0 {
 						sum := sha256.Sum256(data)
-						normalizedPath := w.normalizeAuthPath(path)
 						w.lastAuthHashes[normalizedPath] = hex.EncodeToString(sum[:])
 						// Parse and cache auth content for future diff comparisons
 						var auth coreauth.Auth
@@ -121,6 +127,34 @@ func (w *Watcher) reloadClients(rescanAuth bool, affectedOAuthProviders []string
 }
 
 func (w *Watcher) addOrUpdateClient(path string) {
+	info, errStat := os.Stat(path)
+	if errStat != nil {
+		log.Errorf("failed to stat auth file %s: %v", filepath.Base(path), errStat)
+		return
+	}
+	if info.IsDir() {
+		return
+	}
+	normalized := w.normalizeAuthPath(path)
+	currentStat := authFileStat{
+		size:        info.Size(),
+		modTimeUnix: info.ModTime().UnixNano(),
+	}
+	nowUnix := time.Now().UnixNano()
+
+	w.clientsMutex.RLock()
+	if prevStat, ok := w.lastAuthStats[normalized]; ok {
+		if prevStat.size == currentStat.size && prevStat.modTimeUnix == currentStat.modTimeUnix {
+			elapsed := nowUnix - prevStat.seenAtUnix
+			if prevStat.seenAtUnix > 0 && elapsed >= 0 && elapsed <= authStatDedupWindow.Nanoseconds() {
+				w.clientsMutex.RUnlock()
+				log.Debugf("auth file unchanged (mtime/size recent match), skipping reload: %s", filepath.Base(path))
+				return
+			}
+		}
+	}
+	w.clientsMutex.RUnlock()
+
 	data, errRead := os.ReadFile(path)
 	if errRead != nil {
 		log.Errorf("failed to read auth file %s: %v", filepath.Base(path), errRead)
@@ -133,7 +167,6 @@ func (w *Watcher) addOrUpdateClient(path string) {
 
 	sum := sha256.Sum256(data)
 	curHash := hex.EncodeToString(sum[:])
-	normalized := w.normalizeAuthPath(path)
 
 	// Parse new auth content for diff comparison
 	var newAuth coreauth.Auth
@@ -144,13 +177,17 @@ func (w *Watcher) addOrUpdateClient(path string) {
 
 	w.clientsMutex.Lock()
 
-	cfg := w.config
-	if cfg == nil {
+	if w.config == nil {
 		log.Error("config is nil, cannot add or update client")
 		w.clientsMutex.Unlock()
 		return
 	}
 	if prev, ok := w.lastAuthHashes[normalized]; ok && prev == curHash {
+		if w.lastAuthStats == nil {
+			w.lastAuthStats = make(map[string]authFileStat)
+		}
+		currentStat.seenAtUnix = nowUnix
+		w.lastAuthStats[normalized] = currentStat
 		log.Debugf("auth file unchanged (hash match), skipping reload: %s", filepath.Base(path))
 		w.clientsMutex.Unlock()
 		return
@@ -172,6 +209,11 @@ func (w *Watcher) addOrUpdateClient(path string) {
 
 	// Update caches
 	w.lastAuthHashes[normalized] = curHash
+	if w.lastAuthStats == nil {
+		w.lastAuthStats = make(map[string]authFileStat)
+	}
+	currentStat.seenAtUnix = nowUnix
+	w.lastAuthStats[normalized] = currentStat
 	if w.lastAuthContents == nil {
 		w.lastAuthContents = make(map[string]*coreauth.Auth)
 	}
@@ -181,10 +223,7 @@ func (w *Watcher) addOrUpdateClient(path string) {
 
 	w.refreshAuthState(false)
 
-	if w.reloadCallback != nil {
-		log.Debugf("triggering server update callback after add/update")
-		w.reloadCallback(cfg)
-	}
+	w.scheduleAuthReload()
 	w.persistAuthAsync(fmt.Sprintf("Sync auth %s", filepath.Base(path)), path)
 }
 
@@ -192,18 +231,15 @@ func (w *Watcher) removeClient(path string) {
 	normalized := w.normalizeAuthPath(path)
 	w.clientsMutex.Lock()
 
-	cfg := w.config
 	delete(w.lastAuthHashes, normalized)
+	delete(w.lastAuthStats, normalized)
 	delete(w.lastAuthContents, normalized)
 
 	w.clientsMutex.Unlock() // Release the lock before the callback
 
 	w.refreshAuthState(false)
 
-	if w.reloadCallback != nil {
-		log.Debugf("triggering server update callback after removal")
-		w.reloadCallback(cfg)
-	}
+	w.scheduleAuthReload()
 	w.persistAuthAsync(fmt.Sprintf("Remove auth %s", filepath.Base(path)), path)
 }
 
@@ -225,7 +261,7 @@ func (w *Watcher) loadFileClients(cfg *config.Config) int {
 			log.Debugf("error accessing path %s: %v", path, err)
 			return err
 		}
-		if !info.IsDir() && strings.HasSuffix(strings.ToLower(info.Name()), ".json") {
+		if !info.IsDir() && isWatchedAuthJSONPath(path) {
 			authFileCount++
 			log.Debugf("processing auth file %d: %s", authFileCount, filepath.Base(path))
 			if data, errCreate := os.ReadFile(path); errCreate == nil && len(data) > 0 {
@@ -280,6 +316,109 @@ func (w *Watcher) persistConfigAsync() {
 			log.Errorf("failed to persist config change: %v", err)
 		}
 	}()
+}
+
+func (w *Watcher) scheduleAuthReload() {
+	if w == nil || w.reloadCallback == nil {
+		return
+	}
+
+	w.reloadMetrics.authRequested.Add(1)
+	now := time.Now()
+
+	w.authReloadMu.Lock()
+	if !w.authReloadQueued.IsZero() {
+		w.reloadMetrics.authCoalesced.Add(1)
+	} else {
+		w.authReloadQueued = now
+	}
+
+	debounceWindow, maxCoalesceWindow := w.authReloadWindows()
+	delay := debounceWindow
+	if elapsed := now.Sub(w.authReloadQueued); elapsed >= maxCoalesceWindow {
+		delay = 0
+	} else {
+		if remaining := maxCoalesceWindow - elapsed; delay > remaining {
+			delay = remaining
+		}
+	}
+
+	if w.authReloadTimer != nil {
+		w.authReloadTimer.Stop()
+	}
+	w.authReloadTimer = time.AfterFunc(delay, w.executeAuthReload)
+	w.authReloadMu.Unlock()
+}
+
+func (w *Watcher) executeAuthReload() {
+	w.authReloadMu.Lock()
+	w.authReloadTimer = nil
+	w.authReloadQueued = time.Time{}
+	w.authReloadMu.Unlock()
+
+	w.clientsMutex.RLock()
+	cfg := w.config
+	w.clientsMutex.RUnlock()
+	if cfg == nil || w.reloadCallback == nil {
+		return
+	}
+
+	start := time.Now()
+	w.reloadCallback(cfg)
+	duration := time.Since(start)
+
+	executed := w.reloadMetrics.authExecuted.Add(1)
+	requested := w.reloadMetrics.authRequested.Load()
+	coalesced := w.reloadMetrics.authCoalesced.Load()
+	log.Debugf(
+		"auth reload callback executed in %dms (requested=%d executed=%d coalesced=%d)",
+		duration.Milliseconds(),
+		requested,
+		executed,
+		coalesced,
+	)
+}
+
+func (w *Watcher) stopAuthReloadTimer() {
+	w.authReloadMu.Lock()
+	if w.authReloadTimer != nil {
+		w.authReloadTimer.Stop()
+		w.authReloadTimer = nil
+	}
+	w.authReloadQueued = time.Time{}
+	w.authReloadMu.Unlock()
+}
+
+func (w *Watcher) authReloadWindows() (time.Duration, time.Duration) {
+	debounceMS := int(authReloadDebounce / time.Millisecond)
+	maxCoalesceMS := int(authReloadMaxCoalesce / time.Millisecond)
+
+	w.clientsMutex.RLock()
+	cfg := w.config
+	w.clientsMutex.RUnlock()
+
+	if cfg != nil {
+		if cfg.AuthReloadDebounceMS > 0 {
+			debounceMS = cfg.AuthReloadDebounceMS
+		}
+		if cfg.AuthReloadMaxCoalesceMS > 0 {
+			maxCoalesceMS = cfg.AuthReloadMaxCoalesceMS
+		}
+	}
+
+	if debounceMS < 25 {
+		debounceMS = 25
+	}
+	if debounceMS > 5000 {
+		debounceMS = 5000
+	}
+	if maxCoalesceMS < debounceMS {
+		maxCoalesceMS = debounceMS
+	}
+	if maxCoalesceMS > 15000 {
+		maxCoalesceMS = 15000
+	}
+	return time.Duration(debounceMS) * time.Millisecond, time.Duration(maxCoalesceMS) * time.Millisecond
 }
 
 func (w *Watcher) persistAuthAsync(message string, paths ...string) {

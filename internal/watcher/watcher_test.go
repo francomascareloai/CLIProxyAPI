@@ -22,6 +22,18 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func waitForAtomicInt32(t *testing.T, actual *int32, expected int32, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if atomic.LoadInt32(actual) == expected {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for value %d (got %d)", expected, atomic.LoadInt32(actual))
+}
+
 func TestApplyAuthExcludedModelsMeta_APIKey(t *testing.T) {
 	auth := &coreauth.Auth{Attributes: map[string]string{}}
 	cfg := &config.Config{}
@@ -406,13 +418,67 @@ func TestAddOrUpdateClientTriggersReloadAndHash(t *testing.T) {
 
 	w.addOrUpdateClient(authFile)
 
-	if got := atomic.LoadInt32(&reloads); got != 1 {
-		t.Fatalf("expected reload callback once, got %d", got)
-	}
+	waitForAtomicInt32(t, &reloads, 1, 2*time.Second)
 	// Use normalizeAuthPath to match how addOrUpdateClient stores the key
 	normalized := w.normalizeAuthPath(authFile)
 	if _, ok := w.lastAuthHashes[normalized]; !ok {
 		t.Fatalf("expected hash to be stored for %s", normalized)
+	}
+}
+
+func TestAddOrUpdateClientRecentStatMatchSkipsOnlyBurstDuplicates(t *testing.T) {
+	tmpDir := t.TempDir()
+	authFile := filepath.Join(tmpDir, "sample.json")
+	content := []byte(`{"type":"demo","api_key":"k"}`)
+	if err := os.WriteFile(authFile, content, 0o644); err != nil {
+		t.Fatalf("failed to create auth file: %v", err)
+	}
+	info, errStat := os.Stat(authFile)
+	if errStat != nil {
+		t.Fatalf("failed to stat auth file: %v", errStat)
+	}
+
+	var reloads int32
+	w := &Watcher{
+		authDir:        tmpDir,
+		lastAuthHashes: make(map[string]string),
+		lastAuthStats:  make(map[string]authFileStat),
+		reloadCallback: func(*config.Config) {
+			atomic.AddInt32(&reloads, 1)
+		},
+	}
+	w.SetConfig(&config.Config{AuthDir: tmpDir})
+	normalized := w.normalizeAuthPath(authFile)
+
+	// 1) Recent duplicate event with unchanged stat should be skipped fast.
+	w.lastAuthHashes[normalized] = "stale-hash"
+	w.lastAuthStats[normalized] = authFileStat{
+		size:        info.Size(),
+		modTimeUnix: info.ModTime().UnixNano(),
+		seenAtUnix:  time.Now().UnixNano(),
+	}
+	w.addOrUpdateClient(authFile)
+	time.Sleep(authReloadDebounce + 100*time.Millisecond)
+	if got := atomic.LoadInt32(&reloads); got != 0 {
+		t.Fatalf("expected no reload for recent duplicate event, got %d", got)
+	}
+	if gotHash := w.lastAuthHashes[normalized]; gotHash != "stale-hash" {
+		t.Fatalf("expected hash cache untouched on recent duplicate skip, got %q", gotHash)
+	}
+
+	// 2) Old stat observation should not skip; it must re-read and process the file.
+	w.lastAuthStats[normalized] = authFileStat{
+		size:        info.Size(),
+		modTimeUnix: info.ModTime().UnixNano(),
+		seenAtUnix:  time.Now().Add(-2 * authStatDedupWindow).UnixNano(),
+	}
+	w.addOrUpdateClient(authFile)
+	waitForAtomicInt32(t, &reloads, 1, 2*time.Second)
+
+	sum := sha256.Sum256(content)
+	wantHash := hexString(sum[:])
+	if gotHash := w.lastAuthHashes[normalized]; gotHash != wantHash {
+		t.Fatalf("expected hash to refresh after stale stat check, got %q want %q", gotHash, wantHash)
 	}
 }
 
@@ -436,9 +502,7 @@ func TestRemoveClientRemovesHash(t *testing.T) {
 	if _, ok := w.lastAuthHashes[w.normalizeAuthPath(authFile)]; ok {
 		t.Fatal("expected hash to be removed after deletion")
 	}
-	if got := atomic.LoadInt32(&reloads); got != 1 {
-		t.Fatalf("expected reload callback once, got %d", got)
-	}
+	waitForAtomicInt32(t, &reloads, 1, 2*time.Second)
 }
 
 func TestShouldDebounceRemove(t *testing.T) {
@@ -655,9 +719,7 @@ func TestHandleEventRemovesAuthFile(t *testing.T) {
 
 	w.handleEvent(fsnotify.Event{Name: authFile, Op: fsnotify.Remove})
 
-	if atomic.LoadInt32(&reloads) != 1 {
-		t.Fatalf("expected reload callback once, got %d", reloads)
-	}
+	waitForAtomicInt32(t, &reloads, 1, 2*time.Second)
 	if _, ok := w.lastAuthHashes[w.normalizeAuthPath(authFile)]; ok {
 		t.Fatal("expected hash entry to be removed")
 	}
@@ -800,6 +862,38 @@ func TestHandleEventIgnoresUnrelatedFiles(t *testing.T) {
 	}
 }
 
+func TestHandleEventIgnoresUsageStatisticsJSON(t *testing.T) {
+	tmpDir := t.TempDir()
+	authDir := filepath.Join(tmpDir, "auth")
+	if err := os.MkdirAll(authDir, 0o755); err != nil {
+		t.Fatalf("failed to create auth dir: %v", err)
+	}
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("auth_dir: "+authDir+"\n"), 0o644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	var reloads int32
+	w := &Watcher{
+		authDir:        authDir,
+		configPath:     configPath,
+		lastAuthHashes: make(map[string]string),
+		reloadCallback: func(*config.Config) { atomic.AddInt32(&reloads, 1) },
+	}
+	w.SetConfig(&config.Config{AuthDir: authDir})
+
+	statsFile := filepath.Join(authDir, "usage_statistics.json")
+	if err := os.WriteFile(statsFile, []byte(`{"requests":123}`), 0o644); err != nil {
+		t.Fatalf("failed to write usage stats file: %v", err)
+	}
+	w.handleEvent(fsnotify.Event{Name: statsFile, Op: fsnotify.Write})
+
+	time.Sleep(350 * time.Millisecond)
+	if atomic.LoadInt32(&reloads) != 0 {
+		t.Fatalf("expected no reload for usage_statistics.json, got %d", reloads)
+	}
+}
+
 func TestHandleEventConfigChangeSchedulesReload(t *testing.T) {
 	tmpDir := t.TempDir()
 	authDir := filepath.Join(tmpDir, "auth")
@@ -853,9 +947,7 @@ func TestHandleEventAuthWriteTriggersUpdate(t *testing.T) {
 	w.SetConfig(&config.Config{AuthDir: authDir})
 
 	w.handleEvent(fsnotify.Event{Name: authFile, Op: fsnotify.Write})
-	if atomic.LoadInt32(&reloads) != 1 {
-		t.Fatalf("expected auth write to trigger reload callback, got %d", reloads)
-	}
+	waitForAtomicInt32(t, &reloads, 1, 2*time.Second)
 }
 
 func TestHandleEventRemoveDebounceSkips(t *testing.T) {
@@ -950,9 +1042,7 @@ func TestHandleEventAtomicReplaceChangedTriggersUpdate(t *testing.T) {
 	w.lastAuthHashes[w.normalizeAuthPath(authFile)] = hexString(oldSum[:])
 
 	w.handleEvent(fsnotify.Event{Name: authFile, Op: fsnotify.Rename})
-	if atomic.LoadInt32(&reloads) != 1 {
-		t.Fatalf("expected changed atomic replace to trigger update, got %d", reloads)
-	}
+	waitForAtomicInt32(t, &reloads, 1, 2*time.Second)
 }
 
 func TestHandleEventRemoveUnknownFileIgnored(t *testing.T) {
@@ -1005,9 +1095,7 @@ func TestHandleEventRemoveKnownFileDeletes(t *testing.T) {
 	w.lastAuthHashes[w.normalizeAuthPath(authFile)] = "hash"
 
 	w.handleEvent(fsnotify.Event{Name: authFile, Op: fsnotify.Remove})
-	if atomic.LoadInt32(&reloads) != 1 {
-		t.Fatalf("expected known remove to trigger reload, got %d", reloads)
-	}
+	waitForAtomicInt32(t, &reloads, 1, 2*time.Second)
 	if _, ok := w.lastAuthHashes[w.normalizeAuthPath(authFile)]; ok {
 		t.Fatal("expected known auth hash to be deleted")
 	}
@@ -1283,6 +1371,7 @@ type stubStore struct {
 	authDir         string
 	cfgPersisted    int32
 	authPersisted   int32
+	mu              sync.RWMutex
 	lastAuthMessage string
 	lastAuthPaths   []string
 }
@@ -1298,11 +1387,19 @@ func (s *stubStore) PersistConfig(context.Context) error {
 }
 func (s *stubStore) PersistAuthFiles(_ context.Context, message string, paths ...string) error {
 	atomic.AddInt32(&s.authPersisted, 1)
+	s.mu.Lock()
 	s.lastAuthMessage = message
-	s.lastAuthPaths = paths
+	s.lastAuthPaths = append([]string(nil), paths...)
+	s.mu.Unlock()
 	return nil
 }
 func (s *stubStore) AuthDir() string { return s.authDir }
+
+func (s *stubStore) LastAuthPersist() (string, []string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.lastAuthMessage, append([]string(nil), s.lastAuthPaths...)
+}
 
 func TestNewWatcherDetectsPersisterAndAuthDir(t *testing.T) {
 	tmp := t.TempDir()
@@ -1339,11 +1436,12 @@ func TestPersistConfigAndAuthAsyncInvokePersister(t *testing.T) {
 	if atomic.LoadInt32(&store.authPersisted) != 1 {
 		t.Fatalf("expected PersistAuthFiles to be called once, got %d", store.authPersisted)
 	}
-	if store.lastAuthMessage != "msg" {
-		t.Fatalf("unexpected auth message: %s", store.lastAuthMessage)
+	lastMsg, lastPaths := store.LastAuthPersist()
+	if lastMsg != "msg" {
+		t.Fatalf("unexpected auth message: %s", lastMsg)
 	}
-	if len(store.lastAuthPaths) != 2 || store.lastAuthPaths[0] != "a" || store.lastAuthPaths[1] != "b" {
-		t.Fatalf("unexpected filtered paths: %#v", store.lastAuthPaths)
+	if len(lastPaths) != 2 || lastPaths[0] != "a" || lastPaths[1] != "b" {
+		t.Fatalf("unexpected filtered paths: %#v", lastPaths)
 	}
 }
 
@@ -1371,8 +1469,69 @@ func TestScheduleConfigReloadDebounces(t *testing.T) {
 	if atomic.LoadInt32(&reloads) != 1 {
 		t.Fatalf("expected single debounced reload, got %d", reloads)
 	}
-	if w.lastConfigHash == "" {
+	w.clientsMutex.RLock()
+	lastHash := w.lastConfigHash
+	w.clientsMutex.RUnlock()
+	if lastHash == "" {
 		t.Fatal("expected lastConfigHash to be set after reload")
+	}
+}
+
+func TestScheduleAuthReloadDebounces(t *testing.T) {
+	var reloads int32
+	w := &Watcher{
+		reloadCallback: func(*config.Config) {
+			atomic.AddInt32(&reloads, 1)
+		},
+	}
+	w.SetConfig(&config.Config{AuthDir: t.TempDir()})
+
+	w.scheduleAuthReload()
+	w.scheduleAuthReload()
+
+	waitForAtomicInt32(t, &reloads, 1, 2*time.Second)
+	if got := w.reloadMetrics.authRequested.Load(); got < 2 {
+		t.Fatalf("expected authRequested >= 2, got %d", got)
+	}
+	if got := w.reloadMetrics.authCoalesced.Load(); got < 1 {
+		t.Fatalf("expected authCoalesced >= 1, got %d", got)
+	}
+	if got := w.reloadMetrics.authExecuted.Load(); got != 1 {
+		t.Fatalf("expected authExecuted = 1, got %d", got)
+	}
+}
+
+func TestAuthReloadWindowsRespectsConfig(t *testing.T) {
+	w := &Watcher{}
+	w.SetConfig(&config.Config{
+		AuthDir:                 t.TempDir(),
+		AuthReloadDebounceMS:    40,
+		AuthReloadMaxCoalesceMS: 120,
+	})
+
+	debounce, maxCoalesce := w.authReloadWindows()
+	if debounce != 40*time.Millisecond {
+		t.Fatalf("expected debounce 40ms, got %s", debounce)
+	}
+	if maxCoalesce != 120*time.Millisecond {
+		t.Fatalf("expected max coalesce 120ms, got %s", maxCoalesce)
+	}
+}
+
+func TestAuthReloadWindowsClampsInvalidValues(t *testing.T) {
+	w := &Watcher{}
+	w.SetConfig(&config.Config{
+		AuthDir:                 t.TempDir(),
+		AuthReloadDebounceMS:    5,
+		AuthReloadMaxCoalesceMS: 10,
+	})
+
+	debounce, maxCoalesce := w.authReloadWindows()
+	if debounce != 25*time.Millisecond {
+		t.Fatalf("expected debounce clamp to 25ms, got %s", debounce)
+	}
+	if maxCoalesce != 25*time.Millisecond {
+		t.Fatalf("expected max coalesce clamp to debounce 25ms, got %s", maxCoalesce)
 	}
 }
 

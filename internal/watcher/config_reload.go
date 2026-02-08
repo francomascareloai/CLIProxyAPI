@@ -27,9 +27,11 @@ func (w *Watcher) stopConfigReloadTimer() {
 }
 
 func (w *Watcher) scheduleConfigReload() {
+	w.reloadMetrics.configRequested.Add(1)
 	w.configReloadMu.Lock()
 	defer w.configReloadMu.Unlock()
 	if w.configReloadTimer != nil {
+		w.reloadMetrics.configCoalesced.Add(1)
 		w.configReloadTimer.Stop()
 	}
 	w.configReloadTimer = time.AfterFunc(configReloadDebounce, func() {
@@ -62,7 +64,11 @@ func (w *Watcher) reloadConfigIfChanged() {
 		return
 	}
 	log.Infof("config file changed, reloading: %s", w.configPath)
+	start := time.Now()
 	if w.reloadConfig() {
+		executed := w.reloadMetrics.configExecuted.Add(1)
+		requested := w.reloadMetrics.configRequested.Load()
+		coalesced := w.reloadMetrics.configCoalesced.Load()
 		finalHash := newHash
 		if updatedData, errRead := os.ReadFile(w.configPath); errRead == nil && len(updatedData) > 0 {
 			sumUpdated := sha256.Sum256(updatedData)
@@ -74,6 +80,13 @@ func (w *Watcher) reloadConfigIfChanged() {
 		w.lastConfigHash = finalHash
 		w.clientsMutex.Unlock()
 		w.persistConfigAsync()
+		log.Debugf(
+			"config reload completed in %dms (requested=%d executed=%d coalesced=%d)",
+			time.Since(start).Milliseconds(),
+			requested,
+			executed,
+			coalesced,
+		)
 	}
 }
 

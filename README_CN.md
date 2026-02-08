@@ -83,6 +83,62 @@ CLIProxyAPI 已内置对 [Amp CLI](https://ampcode.com) 和 Amp IDE 扩展的支
 - 凭据加载/更新: [docs/sdk-watcher_CN.md](docs/sdk-watcher_CN.md)
 - 自定义 Provider 示例：`examples/custom-provider`
 
+## 性能门禁
+
+为避免热重载场景出现性能回退，可执行：
+
+```bash
+./test/perf_gate.sh
+```
+
+该门禁为自包含测试（本地临时配置与 auth 目录，不依赖外部上游），会校验：
+
+- 空闲时重载抖动
+- auth 文件突发写入时的重载抖动
+- 抖动期间 `/v1/models` 延迟（平均值与 p95）
+
+可通过环境变量调整阈值，例如：
+
+```bash
+PERF_GATE_MAX_BURST_UPDATES=2 PERF_GATE_MAX_MODELS_P95_MS=250 ./test/perf_gate.sh
+```
+
+若需要按提交做基线对比的基准回归检查（基线文件入库），可执行：
+
+```bash
+./test/bench_regression.sh
+```
+
+在明确有意的性能改动后，可更新基线：
+
+```bash
+BENCH_UPDATE_BASELINE=1 ./test/bench_regression.sh
+```
+
+最新运行时优化包括：
+
+- 基于哈希的配置重载判定，降低 watcher 回调路径 CPU 开销
+- 基于版本的 `/v1/models` 响应缓存（OpenAI/Claude 分桶，在 config/auth 快照更新时失效）
+- 共享上游 HTTP Transport 连接池与可配置 keepalive/timeout（`upstream-http`）
+- 可选的按 provider 自适应并发窗口（AIMD 风格 canary，通过 `provider-resilience.adaptive-*` 开启），在上游退化时降低 CPU 抖动
+- 可选的 canary 自动回滚护栏（`provider-resilience.adaptive-auto-rollback-*`），在 SLO 退化时自动关闭对应 provider 的自适应模式
+- auth watcher 增加 `mtime+size` 预检，减少 fsnotify 抖动下的重复读文件
+- 通过 SDK watcher metrics snapshot 暴露重载抖动计数器
+- 新增 Prometheus `/metrics` 指标端点，暴露缓存/更新/抖动计数（运行时 provider，抓取路径轻量）
+- 新增 `auto-profile` 触发式采样（heap/goroutine `.pprof`），支持冷却窗口与文件上限裁剪
+
+用于 24/7 长时间稳定性验证，可执行：
+
+```bash
+SOAK_DURATION_SEC=86400 ./test/soak_24h.sh
+```
+
+Soak 脚本也支持自动生成 heap profile 对比（`go tool pprof`）并做内存增长门禁：
+
+```bash
+SOAK_DURATION_SEC=3600 SOAK_ENABLE_PPROF_DIFF=1 ./test/soak_24h.sh
+```
+
 ## 贡献
 
 欢迎贡献！请随时提交 Pull Request。

@@ -72,7 +72,7 @@ func (w *Watcher) handleEvent(event fsnotify.Event) {
 	normalizedAuthDir := w.normalizeAuthPath(w.authDir)
 	isConfigEvent := normalizedName == normalizedConfigPath && event.Op&configOps != 0
 	authOps := fsnotify.Create | fsnotify.Write | fsnotify.Remove | fsnotify.Rename
-	isAuthJSON := strings.HasPrefix(normalizedName, normalizedAuthDir) && strings.HasSuffix(normalizedName, ".json") && event.Op&authOps != 0
+	isAuthJSON := strings.HasPrefix(normalizedName, normalizedAuthDir) && isWatchedAuthJSONPath(normalizedName) && event.Op&authOps != 0
 	if !isConfigEvent && !isAuthJSON {
 		// Ignore unrelated files (e.g., cookie snapshots *.cookie) and other noise.
 		return
@@ -98,10 +98,6 @@ func (w *Watcher) handleEvent(event fsnotify.Event) {
 		// Wait briefly; if the path exists again, treat as an update instead of removal.
 		time.Sleep(replaceCheckDelay)
 		if _, statErr := os.Stat(event.Name); statErr == nil {
-			if unchanged, errSame := w.authFileUnchanged(event.Name); errSame == nil && unchanged {
-				log.Debugf("auth file unchanged (hash match), skipping reload: %s", filepath.Base(event.Name))
-				return
-			}
 			log.Infof("auth file changed (%s): %s, processing incrementally", event.Op.String(), filepath.Base(event.Name))
 			w.addOrUpdateClient(event.Name)
 			return
@@ -115,16 +111,33 @@ func (w *Watcher) handleEvent(event fsnotify.Event) {
 		return
 	}
 	if event.Op&(fsnotify.Create|fsnotify.Write) != 0 {
-		if unchanged, errSame := w.authFileUnchanged(event.Name); errSame == nil && unchanged {
-			log.Debugf("auth file unchanged (hash match), skipping reload: %s", filepath.Base(event.Name))
-			return
-		}
 		log.Infof("auth file changed (%s): %s, processing incrementally", event.Op.String(), filepath.Base(event.Name))
 		w.addOrUpdateClient(event.Name)
 	}
 }
 
 func (w *Watcher) authFileUnchanged(path string) (bool, error) {
+	normalized := w.normalizeAuthPath(path)
+	if normalized == "" {
+		return false, nil
+	}
+	if info, errStat := os.Stat(path); errStat == nil && !info.IsDir() {
+		nowUnix := time.Now().UnixNano()
+		statNow := authFileStat{
+			size:        info.Size(),
+			modTimeUnix: info.ModTime().UnixNano(),
+		}
+		w.clientsMutex.RLock()
+		prevStat, statCached := w.lastAuthStats[normalized]
+		w.clientsMutex.RUnlock()
+		if statCached && prevStat.size == statNow.size && prevStat.modTimeUnix == statNow.modTimeUnix {
+			elapsed := nowUnix - prevStat.seenAtUnix
+			if prevStat.seenAtUnix > 0 && elapsed >= 0 && elapsed <= authStatDedupWindow.Nanoseconds() {
+				return true, nil
+			}
+		}
+	}
+
 	data, errRead := os.ReadFile(path)
 	if errRead != nil {
 		return false, errRead
@@ -134,8 +147,6 @@ func (w *Watcher) authFileUnchanged(path string) (bool, error) {
 	}
 	sum := sha256.Sum256(data)
 	curHash := hex.EncodeToString(sum[:])
-
-	normalized := w.normalizeAuthPath(path)
 	w.clientsMutex.RLock()
 	prevHash, ok := w.lastAuthHashes[normalized]
 	w.clientsMutex.RUnlock()

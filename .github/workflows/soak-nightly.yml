@@ -1,0 +1,33 @@
+name: Soak Nightly
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      duration_sec:
+        description: "Soak duration in seconds"
+        required: false
+        default: "1800"
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run Soak Test
+        env:
+          SOAK_DURATION_SEC: ${{ github.event.inputs.duration_sec || '1800' }}
+          SOAK_MAX_MODELS_P95_MS: "450"
+          SOAK_MAX_ERROR_RATE_PCT: "1.5"
+          SOAK_MAX_GOROUTINE_DELTA: "350"
+          SOAK_MAX_OPEN_FDS_DELTA: "450"
+        run: ./test/soak_24h.sh
