@@ -4,12 +4,16 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	iflowauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/iflow"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
@@ -165,12 +169,12 @@ func (e *IFlowExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	// Note: TranslateNonStream uses req.Model (original with suffix) to preserve
 	// the original model name in the response for client compatibility.
 	out := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, opts.OriginalRequest, body, data, &param)
-	resp = cliproxyexecutor.Response{Payload: []byte(out)}
+	resp = cliproxyexecutor.Response{Payload: []byte(out), Headers: httpResp.Header.Clone()}
 	return resp, nil
 }
 
 // ExecuteStream performs a streaming chat completion request.
-func (e *IFlowExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (stream <-chan cliproxyexecutor.StreamChunk, err error) {
+func (e *IFlowExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
 	if opts.Alt == "responses/compact" {
 		return nil, statusErr{code: http.StatusNotImplemented, msg: "/responses/compact not supported"}
 	}
@@ -258,7 +262,6 @@ func (e *IFlowExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	}
 
 	out := make(chan cliproxyexecutor.StreamChunk)
-	stream = out
 	go func() {
 		defer close(out)
 		defer func() {
@@ -290,7 +293,7 @@ func (e *IFlowExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		reporter.ensurePublished(ctx)
 	}()
 
-	return stream, nil
+	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
 }
 
 func (e *IFlowExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
@@ -453,11 +456,42 @@ func applyIFlowHeaders(r *http.Request, apiKey string, stream bool) {
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Authorization", "Bearer "+apiKey)
 	r.Header.Set("User-Agent", iflowUserAgent)
+
+	// Generate session-id
+	sessionID := "session-" + generateUUID()
+	r.Header.Set("session-id", sessionID)
+
+	// Generate timestamp and signature
+	timestamp := time.Now().UnixMilli()
+	r.Header.Set("x-iflow-timestamp", fmt.Sprintf("%d", timestamp))
+
+	signature := createIFlowSignature(iflowUserAgent, sessionID, timestamp, apiKey)
+	if signature != "" {
+		r.Header.Set("x-iflow-signature", signature)
+	}
+
 	if stream {
 		r.Header.Set("Accept", "text/event-stream")
 	} else {
 		r.Header.Set("Accept", "application/json")
 	}
+}
+
+// createIFlowSignature generates HMAC-SHA256 signature for iFlow API requests.
+// The signature payload format is: userAgent:sessionId:timestamp
+func createIFlowSignature(userAgent, sessionID string, timestamp int64, apiKey string) string {
+	if apiKey == "" {
+		return ""
+	}
+	payload := fmt.Sprintf("%s:%s:%d", userAgent, sessionID, timestamp)
+	h := hmac.New(sha256.New, []byte(apiKey))
+	h.Write([]byte(payload))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// generateUUID generates a random UUID v4 string.
+func generateUUID() string {
+	return uuid.New().String()
 }
 
 func iflowCreds(a *cliproxyauth.Auth) (apiKey, baseURL string) {

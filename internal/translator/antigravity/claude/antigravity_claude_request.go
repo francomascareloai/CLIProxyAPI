@@ -231,8 +231,12 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 
 							} else if functionResponseResult.IsObject() {
 								functionResponseJSON, _ = sjson.SetRaw(functionResponseJSON, "response.result", functionResponseResult.Raw)
-							} else {
+							} else if functionResponseResult.Raw != "" {
 								functionResponseJSON, _ = sjson.SetRaw(functionResponseJSON, "response.result", functionResponseResult.Raw)
+							} else {
+								// Content field is missing entirely — .Raw is empty which
+								// causes sjson.SetRaw to produce invalid JSON (e.g. "result":}).
+								functionResponseJSON, _ = sjson.Set(functionResponseJSON, "response.result", "")
 							}
 
 							partJSON := `{}`
@@ -344,7 +348,8 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 	// Inject interleaved thinking hint when both tools and thinking are active
 	hasTools := toolDeclCount > 0
 	thinkingResult := gjson.GetBytes(rawJSON, "thinking")
-	hasThinking := thinkingResult.Exists() && thinkingResult.IsObject() && thinkingResult.Get("type").String() == "enabled"
+	thinkingType := thinkingResult.Get("type").String()
+	hasThinking := thinkingResult.Exists() && thinkingResult.IsObject() && (thinkingType == "enabled" || thinkingType == "adaptive")
 	isClaudeThinking := util.IsClaudeThinkingModel(modelName)
 
 	if hasTools && hasThinking && isClaudeThinking {
@@ -377,12 +382,18 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 
 	// Map Anthropic thinking -> Gemini thinkingBudget/include_thoughts when type==enabled
 	if t := gjson.GetBytes(rawJSON, "thinking"); enableThoughtTranslate && t.Exists() && t.IsObject() {
-		if t.Get("type").String() == "enabled" {
+		switch t.Get("type").String() {
+		case "enabled":
 			if b := t.Get("budget_tokens"); b.Exists() && b.Type == gjson.Number {
 				budget := int(b.Int())
 				out, _ = sjson.Set(out, "request.generationConfig.thinkingConfig.thinkingBudget", budget)
 				out, _ = sjson.Set(out, "request.generationConfig.thinkingConfig.includeThoughts", true)
 			}
+		case "adaptive":
+			// Keep adaptive as a high level sentinel; ApplyThinking resolves it
+			// to model-specific max capability.
+			out, _ = sjson.Set(out, "request.generationConfig.thinkingConfig.thinkingLevel", "high")
+			out, _ = sjson.Set(out, "request.generationConfig.thinkingConfig.includeThoughts", true)
 		}
 	}
 	if v := gjson.GetBytes(rawJSON, "temperature"); v.Exists() && v.Type == gjson.Number {

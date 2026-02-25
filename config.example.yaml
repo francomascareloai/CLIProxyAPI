@@ -81,6 +81,10 @@ proxy-url: ""
 # When true, unprefixed model requests only use credentials without a prefix (except when prefix == model name).
 force-model-prefix: false
 
+# When true, forward filtered upstream response headers to downstream clients.
+# Default is false (disabled).
+passthrough-headers: false
+
 # Number of times to retry a request. Retries will occur if the HTTP response code is 403, 408, 500, 502, 503, or 504.
 request-retry: 3
 
@@ -221,6 +225,15 @@ nonstream-keepalive-interval: 0
 #       sensitive-words:             # optional: words to obfuscate with zero-width characters
 #         - "API"
 #         - "proxy"
+#       cache-user-id: true          # optional: default is false; set true to reuse cached user_id per API key instead of generating a random one each request
+
+# Default headers for Claude API requests. Update when Claude Code releases new versions.
+# These are used as fallbacks when the client does not send its own headers.
+# claude-header-defaults:
+#   user-agent: "claude-cli/2.1.44 (external, sdk-cli)"
+#   package-version: "0.74.0"
+#   runtime-version: "v24.3.0"
+#   timeout: "600"
 
 # OpenAI compatibility providers
 # openai-compatibility:
@@ -290,22 +303,7 @@ nonstream-keepalive-interval: 0
 # Supported channels: gemini-cli, vertex, aistudio, antigravity, claude, codex, qwen, iflow, kimi.
 # NOTE: Aliases do not apply to gemini-api-key, codex-api-key, claude-api-key, openai-compatibility, vertex-api-key, or ampcode.
 # You can repeat the same name with different aliases to expose multiple client model names.
-oauth-model-alias:
-  antigravity:
-    - name: "rev19-uic3-1p"
-      alias: "gemini-2.5-computer-use-preview-10-2025"
-    - name: "gemini-3-pro-image"
-      alias: "gemini-3-pro-image-preview"
-    - name: "gemini-3-pro-high"
-      alias: "gemini-3-pro-preview"
-    - name: "gemini-3-flash"
-      alias: "gemini-3-flash-preview"
-    - name: "claude-sonnet-4-5"
-      alias: "gemini-claude-sonnet-4-5"
-    - name: "claude-sonnet-4-5-thinking"
-      alias: "gemini-claude-sonnet-4-5-thinking"
-    - name: "claude-opus-4-5-thinking"
-      alias: "gemini-claude-opus-4-5-thinking"
+# oauth-model-alias:
 #   gemini-cli:
 #     - name: "gemini-2.5-pro"          # original model name under this channel
 #       alias: "g2.5p"                  # client-visible alias
@@ -316,6 +314,9 @@ oauth-model-alias:
 #   aistudio:
 #     - name: "gemini-2.5-pro"
 #       alias: "g2.5p"
+#   antigravity:
+#     - name: "gemini-3-pro-high"
+#       alias: "gemini-3-pro-preview"
 #   claude:
 #     - name: "claude-sonnet-4-5-20250929"
 #       alias: "cs4.5"
