@@ -243,7 +243,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		opts[i](optionState)
 	}
 	// Ensure built-in inline API key auth provider is always available.
-	configaccess.Register()
+	configaccess.Register(&cfg.SDKConfig)
 	// Set gin mode
 	if !cfg.Debug {
 		gin.SetMode(gin.ReleaseMode)
