@@ -244,7 +244,7 @@ func (p *UsagePersister) loadIntoStore() error {
 	if payload.Version != 0 && payload.Version != usagePersistenceVersion {
 		return fmt.Errorf("unsupported version %d", payload.Version)
 	}
-	p.stats.ApplyAggregatedSnapshot(payload.Usage)
+	p.stats.ReplaceAggregatedSnapshot(payload.Usage)
 	return nil
 }
 

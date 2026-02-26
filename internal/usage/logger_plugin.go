@@ -20,13 +20,6 @@ var statisticsEnabled atomic.Bool
 
 func init() {
 	statisticsEnabled.Store(true)
-	// Load persisted statistics from disk
-	if err := defaultRequestStatistics.Load(); err != nil {
-		// Log warning but continue - persistence errors shouldn't prevent startup
-		fmt.Printf("[usage] warning: failed to load persisted statistics: %v\n", err)
-	}
-	// Start auto-save goroutine
-	defaultRequestStatistics.StartAutoSave()
 	coreusage.RegisterPlugin(NewLoggerPlugin())
 }
 
@@ -546,6 +539,90 @@ func (s *RequestStatistics) ApplyAggregatedSnapshot(snapshot AggregatedStatistic
 		}
 		s.tokensByHour[hourInt] += v
 	}
+}
+
+// ReplaceAggregatedSnapshot replaces the current aggregated store with snapshot values.
+// Unlike ApplyAggregatedSnapshot, this method is idempotent and safe for startup loads.
+func (s *RequestStatistics) ReplaceAggregatedSnapshot(snapshot AggregatedStatisticsSnapshot) {
+	if s == nil {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.totalRequests = snapshot.TotalRequests
+	s.successCount = snapshot.SuccessCount
+	s.failureCount = snapshot.FailureCount
+	s.totalTokens = snapshot.TotalTokens
+
+	s.apis = make(map[string]*apiStats, len(snapshot.APIs))
+	for apiName, apiSnapshot := range snapshot.APIs {
+		apiName = strings.TrimSpace(apiName)
+		if apiName == "" {
+			continue
+		}
+		if !strings.HasPrefix(apiName, "api:hmac256:") && shouldHashAPIKeyCandidate(apiName) {
+			apiName = HashClientKey(apiName)
+		}
+		stats := &apiStats{
+			TotalRequests: apiSnapshot.TotalRequests,
+			TotalTokens:   apiSnapshot.TotalTokens,
+			Models:        make(map[string]*modelStats, len(apiSnapshot.Models)),
+		}
+		for modelName, modelSnapshot := range apiSnapshot.Models {
+			modelName = strings.TrimSpace(modelName)
+			if modelName == "" {
+				modelName = "unknown"
+			}
+			stats.Models[modelName] = &modelStats{
+				TotalRequests: modelSnapshot.TotalRequests,
+				TotalTokens:   modelSnapshot.TotalTokens,
+				details:       nil,
+				detailsNext:   0,
+			}
+		}
+		s.apis[apiName] = stats
+	}
+
+	s.requestsByDay = make(map[string]int64, len(snapshot.RequestsByDay))
+	for k, v := range snapshot.RequestsByDay {
+		k = strings.TrimSpace(k)
+		if k == "" {
+			continue
+		}
+		s.requestsByDay[k] = v
+	}
+
+	s.requestsByHour = make(map[int]int64, len(snapshot.RequestsByHour))
+	for hourKey, v := range snapshot.RequestsByHour {
+		hourInt, err := strconv.Atoi(strings.TrimSpace(hourKey))
+		if err != nil || hourInt < 0 || hourInt > 23 {
+			continue
+		}
+		s.requestsByHour[hourInt] = v
+	}
+
+	s.tokensByDay = make(map[string]int64, len(snapshot.TokensByDay))
+	for k, v := range snapshot.TokensByDay {
+		k = strings.TrimSpace(k)
+		if k == "" {
+			continue
+		}
+		s.tokensByDay[k] = v
+	}
+
+	s.tokensByHour = make(map[int]int64, len(snapshot.TokensByHour))
+	for hourKey, v := range snapshot.TokensByHour {
+		hourInt, err := strconv.Atoi(strings.TrimSpace(hourKey))
+		if err != nil || hourInt < 0 || hourInt > 23 {
+			continue
+		}
+		s.tokensByHour[hourInt] = v
+	}
+
+	// A restored snapshot is the current persisted baseline, not new dirty state.
+	s.dirty.Store(false)
 }
 
 type AggregatedStatisticsSnapshot struct {

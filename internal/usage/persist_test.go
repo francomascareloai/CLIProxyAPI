@@ -178,3 +178,48 @@ func TestAggregatedSnapshot_RoundTrip(t *testing.T) {
 		t.Fatalf("expected aggregated snapshot round-trip to preserve values")
 	}
 }
+
+func TestReplaceAggregatedSnapshot_IsIdempotent(t *testing.T) {
+	stats := NewRequestStatistics()
+	snapshot := AggregatedStatisticsSnapshot{
+		TotalRequests: 42,
+		SuccessCount:  40,
+		FailureCount:  2,
+		TotalTokens:   4200,
+		APIs: map[string]AggregatedAPISnapshot{
+			"api:hmac256:test": {
+				TotalRequests: 42,
+				TotalTokens:   4200,
+				Models: map[string]AggregatedModelSnapshot{
+					"gemini-3-pro-preview": {
+						TotalRequests: 42,
+						TotalTokens:   4200,
+					},
+				},
+			},
+		},
+		RequestsByDay: map[string]int64{
+			"2026-02-20": 42,
+		},
+		RequestsByHour: map[string]int64{
+			"10": 7,
+		},
+		TokensByDay: map[string]int64{
+			"2026-02-20": 4200,
+		},
+		TokensByHour: map[string]int64{
+			"10": 700,
+		},
+	}
+
+	stats.ReplaceAggregatedSnapshot(snapshot)
+	first := stats.SnapshotAggregated()
+
+	// Applying the same snapshot again must not duplicate totals.
+	stats.ReplaceAggregatedSnapshot(snapshot)
+	second := stats.SnapshotAggregated()
+
+	if !reflect.DeepEqual(first, second) {
+		t.Fatalf("expected idempotent replace, got different snapshots")
+	}
+}
