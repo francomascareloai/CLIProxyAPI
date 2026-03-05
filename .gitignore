@@ -16,6 +16,8 @@ refs/*
 # Local run artifacts
 cliproxyapi.run.log
 cliproxyapi.pid
+cliproxy-supervisor.log
+cliproxy-supervisor.pid
 .tmp/
 
 # Storage backends
