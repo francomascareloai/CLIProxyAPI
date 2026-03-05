@@ -3,6 +3,9 @@
 package chat_completions
 
 import (
+	"fmt"
+
+	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
@@ -26,5 +29,19 @@ func ConvertOpenAIRequestToOpenAI(modelName string, inputRawJSON []byte, _ bool)
 		// handling mechanism would be needed.
 		return inputRawJSON
 	}
+	// Some clients send non-standard "tools.defer_loading" hints that are not accepted
+	// by OpenAI-compatible providers. Remove them before forwarding.
+	updatedJSON, _ = sjson.DeleteBytes(updatedJSON, "tools.defer_loading")
+
+	tools := gjson.GetBytes(updatedJSON, "tools")
+	if tools.IsArray() {
+		arr := tools.Array()
+		for i := 0; i < len(arr); i++ {
+			if arr[i].Get("defer_loading").Exists() {
+				updatedJSON, _ = sjson.DeleteBytes(updatedJSON, fmt.Sprintf("tools.%d.defer_loading", i))
+			}
+		}
+	}
+
 	return updatedJSON
 }

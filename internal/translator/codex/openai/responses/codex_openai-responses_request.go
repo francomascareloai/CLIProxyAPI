@@ -30,6 +30,14 @@ func ConvertOpenAIResponsesRequestToCodex(modelName string, inputRawJSON []byte,
 	// Delete the user field as it is not supported by the Codex upstream.
 	rawJSON, _ = sjson.DeleteBytes(rawJSON, "user")
 
+	// Strip defer_loading from each tool — Codex Responses API rejects it.
+	// Claude Code >=1.10 sends defer_loading:true on every tool object.
+	if tools := gjson.GetBytes(rawJSON, "tools"); tools.IsArray() {
+		for i := range tools.Array() {
+			rawJSON, _ = sjson.DeleteBytes(rawJSON, fmt.Sprintf("tools.%d.defer_loading", i))
+		}
+	}
+
 	// Convert role "system" to "developer" in input array to comply with Codex API requirements.
 	rawJSON = convertSystemRoleToDeveloper(rawJSON)
 

@@ -203,6 +203,9 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 			tool, _ = sjson.SetRaw(tool, "parameters", normalizeToolParameters(toolResult.Get("input_schema").Raw))
 			tool, _ = sjson.Delete(tool, "input_schema")
 			tool, _ = sjson.Delete(tool, "parameters.$schema")
+			// Non-standard client hint; rejected by OpenAI-compatible providers.
+			tool, _ = sjson.Delete(tool, "defer_loading")
+			tool, _ = sjson.Delete(tool, "deferLoading")
 			tool, _ = sjson.Set(tool, "strict", false)
 			template, _ = sjson.SetRaw(template, "tools.-1", tool)
 		}
