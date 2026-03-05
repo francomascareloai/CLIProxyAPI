@@ -40,6 +40,11 @@ type Watcher struct {
 	authReloadMu      sync.Mutex
 	authReloadTimer   *time.Timer
 	authReloadQueued  time.Time
+	serverUpdateMu    sync.Mutex
+	serverUpdateTimer *time.Timer
+	serverUpdateLast  time.Time
+	serverUpdatePend  bool
+	stopped           atomic.Bool
 	reloadCallback    func(*config.Config)
 	watcher           *fsnotify.Watcher
 	lastAuthHashes    map[string]string
@@ -111,6 +116,7 @@ const (
 	authReloadMaxCoalesce    = 1 * time.Second
 	authRemoveDebounceWindow = 1 * time.Second
 	authStatDedupWindow      = 400 * time.Millisecond
+	serverUpdateDebounce     = 1 * time.Second
 )
 
 var ignoredAuthJSONBaseNames = map[string]struct{}{
@@ -163,9 +169,11 @@ func (w *Watcher) Start(ctx context.Context) error {
 
 // Stop stops the file watcher
 func (w *Watcher) Stop() error {
+	w.stopped.Store(true)
 	w.stopDispatch()
 	w.stopConfigReloadTimer()
 	w.stopAuthReloadTimer()
+	w.stopServerUpdateTimer()
 	return w.watcher.Close()
 }
 

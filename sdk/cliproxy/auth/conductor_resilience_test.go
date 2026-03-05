@@ -32,10 +32,10 @@ func (e *resilienceExecutor) Execute(_ context.Context, _ *Auth, _ cliproxyexecu
 	return cliproxyexecutor.Response{Payload: []byte(`{"ok":true}`)}, nil
 }
 
-func (e *resilienceExecutor) ExecuteStream(_ context.Context, _ *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (<-chan cliproxyexecutor.StreamChunk, error) {
+func (e *resilienceExecutor) ExecuteStream(_ context.Context, _ *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
 	ch := make(chan cliproxyexecutor.StreamChunk)
 	close(ch)
-	return ch, nil
+	return &cliproxyexecutor.StreamResult{Chunks: ch}, nil
 }
 
 func (e *resilienceExecutor) Refresh(_ context.Context, auth *Auth) (*Auth, error) {

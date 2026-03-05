@@ -24,10 +24,10 @@ func (e *refreshTestExecutor) Execute(ctx context.Context, auth *Auth, req clipr
 	return cliproxyexecutor.Response{}, nil
 }
 
-func (e *refreshTestExecutor) ExecuteStream(ctx context.Context, auth *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (<-chan cliproxyexecutor.StreamChunk, error) {
+func (e *refreshTestExecutor) ExecuteStream(ctx context.Context, auth *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
 	out := make(chan cliproxyexecutor.StreamChunk)
 	close(out)
-	return out, nil
+	return &cliproxyexecutor.StreamResult{Chunks: out}, nil
 }
 
 func (e *refreshTestExecutor) CountTokens(ctx context.Context, auth *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
