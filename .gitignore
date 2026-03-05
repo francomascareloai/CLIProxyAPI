@@ -51,6 +51,7 @@ GEMINI.md
 .bmad/*
 _bmad/*
 _bmad-output/*
+MEMORY/*
 
 # macOS
 .DS_Store
