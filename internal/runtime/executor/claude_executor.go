@@ -232,14 +232,24 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	}
 	appendAPIResponseChunk(ctx, e.cfg, data)
 	if stream {
+		publishedUsage := false
 		lines := bytes.Split(data, []byte("\n"))
 		for _, line := range lines {
 			if detail, ok := parseClaudeStreamUsage(line); ok {
+				publishedUsage = true
 				reporter.publish(ctx, detail)
 			}
 		}
+		if !publishedUsage {
+			reporter.ensurePublished(ctx)
+		}
 	} else {
-		reporter.publish(ctx, parseClaudeUsage(data))
+		detail := parseClaudeUsage(data)
+		if detail.InputTokens == 0 && detail.OutputTokens == 0 && detail.ReasoningTokens == 0 && detail.CachedTokens == 0 && detail.TotalTokens == 0 {
+			reporter.ensurePublished(ctx)
+		} else {
+			reporter.publish(ctx, detail)
+		}
 	}
 	if isClaudeOAuthToken(apiKey) && !auth.ToolPrefixDisabled() {
 		data = stripClaudeToolPrefixFromResponse(data, claudeToolPrefix)

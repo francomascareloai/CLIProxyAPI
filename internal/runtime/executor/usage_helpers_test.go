@@ -41,3 +41,19 @@ func TestParseOpenAIUsageResponses(t *testing.T) {
 		t.Fatalf("reasoning tokens = %d, want %d", detail.ReasoningTokens, 9)
 	}
 }
+
+func TestParseClaudeUsage(t *testing.T) {
+	data := []byte(`{"usage":{"input_tokens":11,"output_tokens":22,"cache_read_input_tokens":5}}`)
+	detail := parseClaudeUsage(data)
+	if detail.InputTokens != 11 || detail.OutputTokens != 22 || detail.CachedTokens != 5 || detail.TotalTokens != 33 {
+		t.Fatalf("unexpected claude usage detail: %+v", detail)
+	}
+}
+
+func TestParseGeminiUsage(t *testing.T) {
+	data := []byte(`{"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":4,"thoughtsTokenCount":5,"totalTokenCount":12,"cachedContentTokenCount":2}}`)
+	detail := parseGeminiUsage(data)
+	if detail.InputTokens != 3 || detail.OutputTokens != 4 || detail.ReasoningTokens != 5 || detail.CachedTokens != 2 || detail.TotalTokens != 12 {
+		t.Fatalf("unexpected gemini usage detail: %+v", detail)
+	}
+}

@@ -14,7 +14,7 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-const usagePersistenceVersion = 1
+const usagePersistenceVersion = UsageSchemaVersion
 
 type persistedUsageStats struct {
 	Version    int                          `json:"version"`
@@ -39,6 +39,17 @@ type UsagePersister struct {
 var defaultUsagePersister = &UsagePersister{
 	stats:    defaultRequestStatistics,
 	interval: 30 * time.Second,
+}
+
+func FlushUsageStatsNow(stats *RequestStatistics) error {
+	if stats == nil {
+		return nil
+	}
+	return (&UsagePersister{stats: stats}).flush(true)
+}
+
+func FlushDefaultUsageStatsNow() error {
+	return defaultUsagePersister.flush(true)
 }
 
 // StartUsagePersister starts the default usage persister.
@@ -215,6 +226,20 @@ func (p *UsagePersister) loadIntoStore() error {
 	info, err := os.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
+			legacyPath := getPersistencePath()
+			legacySnapshot, ok, legacyErr := loadLegacyAggregatedSnapshot(legacyPath)
+			if legacyErr != nil {
+				return legacyErr
+			}
+			if !ok {
+				return nil
+			}
+			legacySnapshot = sanitiseAggregatedSnapshot(legacySnapshot)
+			p.stats.ReplaceAggregatedSnapshot(legacySnapshot)
+			if flushErr := p.flush(true); flushErr != nil {
+				return fmt.Errorf("migrate legacy usage stats to canonical storage: %w", flushErr)
+			}
+			log.Infof("usage: migrated legacy usage statistics from %s to %s", legacyPath, path)
 			return nil
 		}
 		return fmt.Errorf("stat %s: %w", path, err)
@@ -241,10 +266,16 @@ func (p *UsagePersister) loadIntoStore() error {
 	if err := json.Unmarshal(data, &payload); err != nil {
 		return fmt.Errorf("decode %s: %w", path, err)
 	}
-	if payload.Version != 0 && payload.Version != usagePersistenceVersion {
+	if payload.Version != 0 && payload.Version != 1 && payload.Version != 2 && payload.Version != usagePersistenceVersion {
 		return fmt.Errorf("unsupported version %d", payload.Version)
 	}
+	payload.Usage = sanitiseAggregatedSnapshot(payload.Usage)
 	p.stats.ReplaceAggregatedSnapshot(payload.Usage)
+	if payload.Version == 1 || payload.Version == 2 {
+		if err := p.flush(true); err != nil {
+			return fmt.Errorf("migrate canonical usage stats v%d->v%d: %w", payload.Version, usagePersistenceVersion, err)
+		}
+	}
 	return nil
 }
 
@@ -295,22 +326,53 @@ func (p *UsagePersister) flush(force bool) error {
 
 func sanitiseAggregatedSnapshot(snapshot AggregatedStatisticsSnapshot) AggregatedStatisticsSnapshot {
 	out := snapshot
-	if len(snapshot.APIs) == 0 {
-		return out
-	}
-
-	out.APIs = make(map[string]AggregatedAPISnapshot, len(snapshot.APIs))
-	for apiName, apiSnapshot := range snapshot.APIs {
-		key := strings.TrimSpace(apiName)
-		if key == "" {
-			continue
+	if len(snapshot.APIs) > 0 {
+		out.APIs = make(map[string]AggregatedAPISnapshot, len(snapshot.APIs))
+		for apiName, apiSnapshot := range snapshot.APIs {
+			key := strings.TrimSpace(apiName)
+			if key == "" {
+				continue
+			}
+			if !strings.HasPrefix(key, "api:hmac256:") && shouldHashAPIKeyCandidate(key) {
+				key = HashClientKey(key)
+			}
+			out.APIs[key] = apiSnapshot
 		}
-		if !strings.HasPrefix(key, "api:hmac256:") && shouldHashAPIKeyCandidate(key) {
-			key = HashClientKey(key)
-		}
-		out.APIs[key] = apiSnapshot
 	}
+	out.Breakdowns = sanitiseUsageBreakdownsSnapshot(snapshot.Breakdowns)
+	coverageStart, coverageEnd, minuteBuckets := restoreRollingState(snapshot.RollingState)
+	out.RollingState = cloneRollingStateSnapshot(snapshotRollingState(coverageStart, coverageEnd, minuteBuckets, time.Now().UTC()))
 	return out
+}
+
+func sanitiseUsageBreakdownsSnapshot(snapshot UsageBreakdownsSnapshot) UsageBreakdownsSnapshot {
+	result := UsageBreakdownsSnapshot{}
+	if len(snapshot.BySource) > 0 {
+		result.BySource = make([]usageBreakdownBucket, 0, len(snapshot.BySource))
+		for _, item := range snapshot.BySource {
+			key, bucket, ok := normaliseUsageBreakdownBucket(item, true)
+			if !ok {
+				continue
+			}
+			bucket.Source = sanitiseDetailSource(key)
+			bucket.AuthIndex = ""
+			result.BySource = append(result.BySource, bucket)
+		}
+		sortUsageBreakdownSnapshot(result.BySource, true)
+	}
+	if len(snapshot.ByAuthIndex) > 0 {
+		result.ByAuthIndex = make([]usageBreakdownBucket, 0, len(snapshot.ByAuthIndex))
+		for _, item := range snapshot.ByAuthIndex {
+			_, bucket, ok := normaliseUsageBreakdownBucket(item, false)
+			if !ok {
+				continue
+			}
+			bucket.Source = ""
+			result.ByAuthIndex = append(result.ByAuthIndex, bucket)
+		}
+		sortUsageBreakdownSnapshot(result.ByAuthIndex, false)
+	}
+	return result
 }
 
 func shouldHashAPIKeyCandidate(value string) bool {
@@ -366,20 +428,9 @@ func writeAtomicFile(path string, data []byte, perm os.FileMode) error {
 		return fmt.Errorf("close tmp %s: %w", tmp, err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
-		if _, statErr := os.Stat(path); statErr == nil {
-			// Best-effort compatibility fallback for platforms/filesystems that do not
-			// support atomic replace semantics.
-			_ = os.Remove(path)
-			if err2 := os.Rename(tmp, path); err2 == nil {
-				goto renameOK
-			} else {
-				err = err2
-			}
-		}
 		_ = os.Remove(tmp)
 		return fmt.Errorf("rename %s -> %s: %w", tmp, path, err)
 	}
-renameOK:
 	_ = os.Chmod(path, perm)
 
 	// Best-effort fsync the directory to ensure the rename is durable.

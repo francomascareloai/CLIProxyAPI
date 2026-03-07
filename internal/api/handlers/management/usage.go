@@ -17,9 +17,143 @@ type usageExportPayload struct {
 	Usage      usage.StatisticsSnapshot `json:"usage"`
 }
 
+type usageCapabilities struct {
+	UsageAggregatesV2 bool `json:"usage_aggregates_v2"`
+	RollingWindowsV1  bool `json:"rolling_windows_v1"`
+}
+
+type usageDetailsRetention struct {
+	DetailsEphemeral          bool `json:"details_ephemeral"`
+	MaxRequestDetailsPerModel int  `json:"max_request_details_per_model"`
+}
+
 type usageImportPayload struct {
 	Version int                      `json:"version"`
 	Usage   usage.StatisticsSnapshot `json:"usage"`
+}
+
+type legacyUsageImportPayload struct {
+	Version int                    `json:"version"`
+	Usage   legacyStatisticsImport `json:"usage"`
+}
+
+type legacyStatisticsImport struct {
+	TotalRequests  int64                      `json:"total_requests"`
+	SuccessCount   int64                      `json:"success_count"`
+	FailureCount   int64                      `json:"failure_count"`
+	TotalTokens    int64                      `json:"total_tokens"`
+	APIs           map[string]legacyAPIImport `json:"apis"`
+	RequestsByDay  map[string]int64           `json:"requests_by_day"`
+	RequestsByHour map[string]int64           `json:"requests_by_hour"`
+	TokensByDay    map[string]int64           `json:"tokens_by_day"`
+	TokensByHour   map[string]int64           `json:"tokens_by_hour"`
+}
+
+type legacyAPIImport struct {
+	TotalRequests int64                        `json:"total_requests"`
+	SuccessCount  int64                        `json:"success_count"`
+	FailureCount  int64                        `json:"failure_count"`
+	TotalTokens   int64                        `json:"total_tokens"`
+	InputTokens   int64                        `json:"input_tokens"`
+	OutputTokens  int64                        `json:"output_tokens"`
+	Models        map[string]legacyModelImport `json:"models"`
+}
+
+type legacyModelImport struct {
+	TotalRequests int64                `json:"total_requests"`
+	SuccessCount  int64                `json:"success_count"`
+	FailureCount  int64                `json:"failure_count"`
+	TotalTokens   int64                `json:"total_tokens"`
+	InputTokens   int64                `json:"input_tokens"`
+	OutputTokens  int64                `json:"output_tokens"`
+	Details       []legacyDetailImport `json:"details"`
+}
+
+type legacyDetailImport struct {
+	Timestamp time.Time        `json:"timestamp"`
+	Source    string           `json:"source"`
+	AuthIndex json.RawMessage  `json:"auth_index"`
+	Tokens    usage.TokenStats `json:"tokens"`
+	Failed    bool             `json:"failed"`
+}
+
+func decodeUsageImportPayload(data []byte) (usageImportPayload, error) {
+	var payload usageImportPayload
+	if err := json.Unmarshal(data, &payload); err == nil {
+		return payload, nil
+	}
+	var legacy legacyUsageImportPayload
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return usageImportPayload{}, err
+	}
+	return usageImportPayload{Version: legacy.Version, Usage: convertLegacyStatisticsImport(legacy.Usage)}, nil
+}
+
+func convertLegacyStatisticsImport(in legacyStatisticsImport) usage.StatisticsSnapshot {
+	out := usage.StatisticsSnapshot{
+		TotalRequests:  in.TotalRequests,
+		SuccessCount:   in.SuccessCount,
+		FailureCount:   in.FailureCount,
+		TotalTokens:    in.TotalTokens,
+		APIs:           make(map[string]usage.APISnapshot, len(in.APIs)),
+		RequestsByDay:  in.RequestsByDay,
+		RequestsByHour: in.RequestsByHour,
+		TokensByDay:    in.TokensByDay,
+		TokensByHour:   in.TokensByHour,
+	}
+	for apiName, api := range in.APIs {
+		models := make(map[string]usage.ModelSnapshot, len(api.Models))
+		for modelName, model := range api.Models {
+			details := make([]usage.RequestDetail, 0, len(model.Details))
+			for _, detail := range model.Details {
+				details = append(details, usage.RequestDetail{
+					Timestamp: detail.Timestamp,
+					Source:    detail.Source,
+					AuthIndex: decodeLegacyAuthIndex(detail.AuthIndex),
+					Tokens:    detail.Tokens,
+					Failed:    detail.Failed,
+				})
+			}
+			models[modelName] = usage.ModelSnapshot{
+				TotalRequests: model.TotalRequests,
+				SuccessCount:  model.SuccessCount,
+				FailureCount:  model.FailureCount,
+				TotalTokens:   model.TotalTokens,
+				InputTokens:   model.InputTokens,
+				OutputTokens:  model.OutputTokens,
+				Details:       details,
+			}
+		}
+		out.APIs[apiName] = usage.APISnapshot{
+			TotalRequests: api.TotalRequests,
+			SuccessCount:  api.SuccessCount,
+			FailureCount:  api.FailureCount,
+			TotalTokens:   api.TotalTokens,
+			InputTokens:   api.InputTokens,
+			OutputTokens:  api.OutputTokens,
+			Models:        models,
+		}
+	}
+	return out
+}
+
+func decodeLegacyAuthIndex(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	var n int64
+	if err := json.Unmarshal(raw, &n); err == nil {
+		return fmt.Sprintf("%d", n)
+	}
+	var u uint64
+	if err := json.Unmarshal(raw, &u); err == nil {
+		return fmt.Sprintf("%d", u)
+	}
+	return ""
 }
 
 // GetUsageStatistics returns the in-memory request statistics snapshot.
@@ -29,6 +163,16 @@ func (h *Handler) GetUsageStatistics(c *gin.Context) {
 		snapshot = h.usageStats.Snapshot()
 	}
 	c.JSON(http.StatusOK, gin.H{
+		"schema_version": usage.UsageSchemaVersion,
+		"capabilities": usageCapabilities{
+			UsageAggregatesV2: true,
+			RollingWindowsV1:  true,
+		},
+		"breakdowns": snapshot.Breakdowns,
+		"retention": usageDetailsRetention{
+			DetailsEphemeral:          true,
+			MaxRequestDetailsPerModel: usage.MaxRequestDetailsPerModel(),
+		},
 		"usage":           snapshot,
 		"failed_requests": snapshot.FailureCount,
 	})
@@ -41,7 +185,7 @@ func (h *Handler) ExportUsageStatistics(c *gin.Context) {
 		snapshot = h.usageStats.Snapshot()
 	}
 	c.JSON(http.StatusOK, usageExportPayload{
-		Version:    1,
+		Version:    usage.UsageSchemaVersion,
 		ExportedAt: time.Now().UTC(),
 		Usage:      snapshot,
 	})
@@ -60,17 +204,21 @@ func (h *Handler) ImportUsageStatistics(c *gin.Context) {
 		return
 	}
 
-	var payload usageImportPayload
-	if err := json.Unmarshal(data, &payload); err != nil {
+	payload, err := decodeUsageImportPayload(data)
+	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json"})
 		return
 	}
-	if payload.Version != 0 && payload.Version != 1 {
+	if payload.Version != 0 && payload.Version != 1 && payload.Version != 2 && payload.Version != usage.UsageSchemaVersion {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported version"})
 		return
 	}
 
 	result := h.usageStats.MergeSnapshot(payload.Usage)
+	if err := usage.FlushUsageStatsNow(h.usageStats); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "import succeeded but save failed"})
+		return
+	}
 	snapshot := h.usageStats.Snapshot()
 	c.JSON(http.StatusOK, gin.H{
 		"added":           result.Added,
@@ -100,8 +248,8 @@ func (h *Handler) CompactUsageData(c *gin.Context) {
 		return
 	}
 	removed := h.usageStats.CompactOldDetails()
-	// Save immediately after compaction.
-	if err := h.usageStats.Save(); err != nil {
+	// Flush immediately after compaction to the canonical storage.
+	if err := usage.FlushUsageStatsNow(h.usageStats); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error":   "compaction succeeded but save failed",
 			"removed": removed,
@@ -223,4 +371,3 @@ func (h *Handler) GetCooldownStatus(c *gin.Context) {
 		"checked_at":     now,
 	})
 }
-

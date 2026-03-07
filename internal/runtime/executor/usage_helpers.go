@@ -105,6 +105,7 @@ func (r *usageReporter) ensurePublished(ctx context.Context) {
 			AuthIndex:   r.authIndex,
 			RequestedAt: r.requestedAt,
 			Failed:      false,
+			CountOnly:   true,
 			Detail:      usage.Detail{},
 		})
 	})

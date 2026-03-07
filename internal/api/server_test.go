@@ -112,6 +112,59 @@ func TestAmpProviderModelRoutes(t *testing.T) {
 	}
 }
 
+func TestServeManagementControlPanel_RefreshesIncompatibleRuntimeAsset(t *testing.T) {
+	t.Setenv("WRITABLE_PATH", "")
+	t.Setenv("writable_path", "")
+
+	originalWD, errGetwd := os.Getwd()
+	if errGetwd != nil {
+		t.Fatalf("failed to get current working directory: %v", errGetwd)
+	}
+
+	tmpDir := t.TempDir()
+	if errChdir := os.Chdir(tmpDir); errChdir != nil {
+		t.Fatalf("failed to switch working directory: %v", errChdir)
+	}
+	defer func() {
+		if errChdirBack := os.Chdir(originalWD); errChdirBack != nil {
+			t.Fatalf("failed to restore working directory: %v", errChdirBack)
+		}
+	}()
+
+	server := newTestServer(t)
+	assetPath := filepath.Join(filepath.Dir(server.configFilePath), "static", "management.html")
+	if err := os.MkdirAll(filepath.Dir(assetPath), 0o755); err != nil {
+		t.Fatalf("mkdir asset dir: %v", err)
+	}
+	if err := os.WriteFile(assetPath, []byte("<html>stale asset without usage_aggregates_v2 marker</html>"), 0o644); err != nil {
+		t.Fatalf("write stale asset: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/management.html", nil)
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unexpected status code: got %d want %d; body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "usage_aggregates_v2") {
+		t.Fatalf("expected refreshed management asset to contain usage_aggregates_v2 marker")
+	}
+	if !strings.Contains(body, "rolling_windows_v1") {
+		t.Fatalf("expected refreshed management asset to contain rolling_windows_v1 marker")
+	}
+	if !strings.Contains(body, "__periodFallback") {
+		t.Fatalf("expected refreshed management asset to contain period fallback marker")
+	}
+	persisted, err := os.ReadFile(assetPath)
+	if err != nil {
+		t.Fatalf("read refreshed asset: %v", err)
+	}
+	if !strings.Contains(string(persisted), "compatibility: usage_aggregates_v2 rolling_windows_v1 __periodFallback") {
+		t.Fatalf("expected runtime asset on disk to be refreshed with compatibility marker")
+	}
+}
+
 func TestDefaultRequestLoggerFactory_UsesResolvedLogDirectory(t *testing.T) {
 	t.Setenv("WRITABLE_PATH", "")
 	t.Setenv("writable_path", "")

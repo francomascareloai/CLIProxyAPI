@@ -19,6 +19,7 @@ type Record struct {
 	Source      string
 	RequestedAt time.Time
 	Failed      bool
+	CountOnly   bool
 	Detail      Detail
 }
 
@@ -41,18 +42,25 @@ type queueItem struct {
 	record Record
 }
 
+type DroppedRecordsSnapshot struct {
+	TotalDropped int64
+	ByMinute     map[int64]int64
+}
+
 // Manager maintains a queue of usage records and delivers them to registered plugins.
 type Manager struct {
 	once     sync.Once
 	stopOnce sync.Once
 	cancel   context.CancelFunc
 
-	mu     sync.Mutex
-	cond   *sync.Cond
-	queue  []queueItem
-	maxLen int
-	closed bool
-	done   chan struct{}
+	mu              sync.Mutex
+	cond            *sync.Cond
+	queue           []queueItem
+	maxLen          int
+	closed          bool
+	done            chan struct{}
+	droppedRecords  int64
+	droppedByMinute map[int64]int64
 
 	pluginsMu sync.RWMutex
 	plugins   []Plugin
@@ -62,7 +70,10 @@ type Manager struct {
 
 // NewManager constructs a manager with a buffered queue.
 func NewManager(buffer int) *Manager {
-	m := &Manager{maxLen: buffer}
+	m := &Manager{
+		maxLen:          buffer,
+		droppedByMinute: make(map[int64]int64),
+	}
 	m.cond = sync.NewCond(&m.mu)
 	return m
 }
@@ -158,6 +169,7 @@ func (m *Manager) Publish(ctx context.Context, record Record) {
 	}
 	// Buffer is a hard cap: when full, drop (do not block requests).
 	if m.maxLen > 0 && len(m.queue) >= m.maxLen {
+		m.recordDroppedLocked(record)
 		m.mu.Unlock()
 		m.logDropRateLimited()
 		return
@@ -208,6 +220,50 @@ func (m *Manager) dispatch(item queueItem) {
 		}
 		safeInvoke(plugin, item.ctx, item.record)
 	}
+}
+
+func (m *Manager) recordDroppedLocked(record Record) {
+	if m == nil {
+		return
+	}
+	m.droppedRecords++
+	if m.droppedByMinute == nil {
+		m.droppedByMinute = make(map[int64]int64)
+	}
+	timestamp := record.RequestedAt.UTC()
+	if timestamp.IsZero() {
+		timestamp = time.Now().UTC()
+	}
+	minute := timestamp.Truncate(time.Minute).Unix() / 60
+	m.droppedByMinute[minute]++
+}
+
+func (m *Manager) DroppedRecordsSnapshot() DroppedRecordsSnapshot {
+	if m == nil {
+		return DroppedRecordsSnapshot{}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	result := DroppedRecordsSnapshot{
+		TotalDropped: m.droppedRecords,
+	}
+	if len(m.droppedByMinute) > 0 {
+		result.ByMinute = make(map[int64]int64, len(m.droppedByMinute))
+		for minute, count := range m.droppedByMinute {
+			result.ByMinute[minute] = count
+		}
+	}
+	return result
+}
+
+func (m *Manager) ResetDroppedRecords() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.droppedRecords = 0
+	m.droppedByMinute = make(map[int64]int64)
 }
 
 func (m *Manager) logDropRateLimited() {
