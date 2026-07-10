@@ -79,6 +79,38 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 				continue
 			}
 			originalRole := roleResult.String()
+			// Gemini only accepts user/model roles in contents; system goes in systemInstruction
+			if originalRole == "system" {
+				contentsResult := messageResult.Get("content")
+				if contentsResult.Exists() {
+					if !hasSystemInstruction {
+						systemInstructionJSON = `{"role":"user","parts":[]}`
+					}
+					if contentsResult.IsArray() {
+						contentResults := contentsResult.Array()
+						for _, contentItem := range contentResults {
+							if contentItem.Get("type").String() == "text" {
+								text := contentItem.Get("text").String()
+								if text != "" {
+									partJSON := `{}`
+									partJSON, _ = sjson.Set(partJSON, "text", text)
+									systemInstructionJSON, _ = sjson.SetRaw(systemInstructionJSON, "parts.-1", partJSON)
+									hasSystemInstruction = true
+								}
+							}
+						}
+					} else if contentsResult.Type == gjson.String {
+						text := contentsResult.String()
+						if text != "" {
+							partJSON := `{}`
+							partJSON, _ = sjson.Set(partJSON, "text", text)
+							systemInstructionJSON, _ = sjson.SetRaw(systemInstructionJSON, "parts.-1", partJSON)
+							hasSystemInstruction = true
+						}
+					}
+				}
+				continue
+			}
 			role := originalRole
 			if role == "assistant" {
 				role = "model"

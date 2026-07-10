@@ -193,6 +193,38 @@ func (h *Handler) PutUsageStatisticsEnabled(c *gin.Context) {
 	h.updateBoolField(c, func(v bool) { h.cfg.UsageStatisticsEnabled = v })
 }
 
+func (h *Handler) GetUsageJournalRetentionDays(c *gin.Context) {
+	c.JSON(200, gin.H{"usage-journal-retention-days": h.cfg.UsageJournalRetentionDays})
+}
+
+func (h *Handler) PutUsageJournalRetentionDays(c *gin.Context) {
+	h.updateIntField(c, func(v int) {
+		if v < 8 {
+			v = 8
+		}
+		h.cfg.UsageJournalRetentionDays = v
+		if h.cfg.UsageJournalReplayMaxDays > v {
+			h.cfg.UsageJournalReplayMaxDays = v
+		}
+	})
+}
+
+func (h *Handler) GetUsageJournalReplayMaxDays(c *gin.Context) {
+	c.JSON(200, gin.H{"usage-journal-replay-max-days": h.cfg.UsageJournalReplayMaxDays})
+}
+
+func (h *Handler) PutUsageJournalReplayMaxDays(c *gin.Context) {
+	h.updateIntField(c, func(v int) {
+		if v < 8 {
+			v = 8
+		}
+		if retention := h.cfg.UsageJournalRetentionDays; retention >= 8 && v > retention {
+			v = retention
+		}
+		h.cfg.UsageJournalReplayMaxDays = v
+	})
+}
+
 // UsageStatisticsEnabled
 func (h *Handler) GetLoggingToFile(c *gin.Context) {
 	c.JSON(200, gin.H{"logging-to-file": h.cfg.LoggingToFile})

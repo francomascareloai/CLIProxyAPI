@@ -1,5 +1,5 @@
 // Command import-usage converts a usage statistics backup (from GET /v0/management/usage)
-// to the persistence file format used by the CLIProxyAPI.
+// to the canonical persistence file format used by the CLIProxyAPI.
 //
 // Usage: go run cmd/import-usage/main.go <backup.json> [output-path]
 package main
@@ -10,84 +10,71 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	internalusage "github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 )
 
-// Input format (from API)
-type apiResponse struct {
-	FailedRequests int64 `json:"failed_requests"`
-	Usage          struct {
-		TotalRequests  int64                    `json:"total_requests"`
-		SuccessCount   int64                    `json:"success_count"`
-		FailureCount   int64                    `json:"failure_count"`
-		TotalTokens    int64                    `json:"total_tokens"`
-		APIs           map[string]apiAPIStats   `json:"apis"`
-		RequestsByDay  map[string]int64         `json:"requests_by_day"`
-		RequestsByHour map[string]int64         `json:"requests_by_hour"`
-		TokensByDay    map[string]int64         `json:"tokens_by_day"`
-		TokensByHour   map[string]int64         `json:"tokens_by_hour"`
-	} `json:"usage"`
+type usageImportPayload struct {
+	Version int                              `json:"version"`
+	Usage   internalusage.StatisticsSnapshot `json:"usage"`
 }
 
-type apiAPIStats struct {
-	TotalRequests int64                    `json:"total_requests"`
-	TotalTokens   int64                    `json:"total_tokens"`
-	Models        map[string]apiModelStats `json:"models"`
+type legacyUsageImportPayload struct {
+	Version int                    `json:"version"`
+	Usage   legacyStatisticsImport `json:"usage"`
 }
 
-type apiModelStats struct {
-	TotalRequests int64           `json:"total_requests"`
-	TotalTokens   int64           `json:"total_tokens"`
-	Details       []requestDetail `json:"details"`
+type legacyStatisticsImport struct {
+	TotalRequests  int64                      `json:"total_requests"`
+	SuccessCount   int64                      `json:"success_count"`
+	FailureCount   int64                      `json:"failure_count"`
+	TotalTokens    int64                      `json:"total_tokens"`
+	APIs           map[string]legacyAPIImport `json:"apis"`
+	RequestsByDay  map[string]int64           `json:"requests_by_day"`
+	RequestsByHour map[string]int64           `json:"requests_by_hour"`
+	TokensByDay    map[string]int64           `json:"tokens_by_day"`
+	TokensByHour   map[string]int64           `json:"tokens_by_hour"`
 }
 
-type requestDetail struct {
-	Timestamp time.Time  `json:"timestamp"`
-	Source    string     `json:"source"`
-	AuthIndex uint64     `json:"auth_index"`
-	Tokens    tokenStats `json:"tokens"`
-	Failed    bool       `json:"failed"`
+type legacyAPIImport struct {
+	TotalRequests int64                        `json:"total_requests"`
+	SuccessCount  int64                        `json:"success_count"`
+	FailureCount  int64                        `json:"failure_count"`
+	TotalTokens   int64                        `json:"total_tokens"`
+	InputTokens   int64                        `json:"input_tokens"`
+	OutputTokens  int64                        `json:"output_tokens"`
+	Models        map[string]legacyModelImport `json:"models"`
 }
 
-type tokenStats struct {
-	InputTokens     int64 `json:"input_tokens"`
-	OutputTokens    int64 `json:"output_tokens"`
-	ReasoningTokens int64 `json:"reasoning_tokens"`
-	CachedTokens    int64 `json:"cached_tokens"`
-	TotalTokens     int64 `json:"total_tokens"`
+type legacyModelImport struct {
+	TotalRequests int64                `json:"total_requests"`
+	SuccessCount  int64                `json:"success_count"`
+	FailureCount  int64                `json:"failure_count"`
+	TotalTokens   int64                `json:"total_tokens"`
+	InputTokens   int64                `json:"input_tokens"`
+	OutputTokens  int64                `json:"output_tokens"`
+	Details       []legacyDetailImport `json:"details"`
 }
 
-// Output format (persistence)
-type persistedData struct {
-	Version        int                       `json:"version"`
-	SavedAt        time.Time                 `json:"saved_at"`
-	TotalRequests  int64                     `json:"total_requests"`
-	SuccessCount   int64                     `json:"success_count"`
-	FailureCount   int64                     `json:"failure_count"`
-	TotalTokens    int64                     `json:"total_tokens"`
-	APIs           map[string]*persistedAPI  `json:"apis"`
-	RequestsByDay  map[string]int64          `json:"requests_by_day"`
-	RequestsByHour map[int]int64             `json:"requests_by_hour"`
-	TokensByDay    map[string]int64          `json:"tokens_by_day"`
-	TokensByHour   map[int]int64             `json:"tokens_by_hour"`
+type legacyDetailImport struct {
+	Timestamp time.Time                `json:"timestamp"`
+	Source    string                   `json:"source"`
+	AuthIndex json.RawMessage          `json:"auth_index"`
+	Tokens    internalusage.TokenStats `json:"tokens"`
+	Failed    bool                     `json:"failed"`
 }
 
-type persistedAPI struct {
-	TotalRequests int64                      `json:"total_requests"`
-	TotalTokens   int64                      `json:"total_tokens"`
-	Models        map[string]*persistedModel `json:"models"`
-}
-
-type persistedModel struct {
-	TotalRequests int64           `json:"total_requests"`
-	TotalTokens   int64           `json:"total_tokens"`
-	Details       []requestDetail `json:"details"`
+type persistedUsageStats struct {
+	Version    int                                        `json:"version"`
+	ExportedAt time.Time                                  `json:"exported_at"`
+	Usage      internalusage.AggregatedStatisticsSnapshot `json:"usage"`
 }
 
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Println("Usage: go run cmd/import-usage/main.go <backup.json> [output-path]")
 		fmt.Println("")
-		fmt.Println("If output-path is not specified, defaults to ~/.cli-proxy-api/usage_statistics.json")
+		fmt.Println("If output-path is not specified, defaults to ~/.cliproxy/usage_stats.json")
 		os.Exit(1)
 	}
 
@@ -101,81 +88,40 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error getting home directory: %v\n", err)
 			os.Exit(1)
 		}
-		outputPath = filepath.Join(homeDir, ".cli-proxy-api", "usage_statistics.json")
+		outputPath = filepath.Join(homeDir, ".cliproxy", "usage_stats.json")
 	}
 
-	// Read input
 	inputData, err := os.ReadFile(inputPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading input file: %v\n", err)
 		os.Exit(1)
 	}
 
-	var apiResp apiResponse
-	if err := json.Unmarshal(inputData, &apiResp); err != nil {
+	payload, err := decodeUsageImportPayload(inputData)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error parsing input JSON: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Convert to persistence format
-	output := persistedData{
-		Version:        1,
-		SavedAt:        time.Now(),
-		TotalRequests:  apiResp.Usage.TotalRequests,
-		SuccessCount:   apiResp.Usage.SuccessCount,
-		FailureCount:   apiResp.Usage.FailureCount,
-		TotalTokens:    apiResp.Usage.TotalTokens,
-		APIs:           make(map[string]*persistedAPI),
-		RequestsByDay:  apiResp.Usage.RequestsByDay,
-		RequestsByHour: make(map[int]int64),
-		TokensByDay:    apiResp.Usage.TokensByDay,
-		TokensByHour:   make(map[int]int64),
+	output := persistedUsageStats{
+		Version:    internalusage.UsageSchemaVersion,
+		ExportedAt: time.Now().UTC(),
+		Usage:      aggregatedSnapshotFromStatistics(payload.Usage),
 	}
 
-	// Convert string hour keys to int
-	for hourStr, count := range apiResp.Usage.RequestsByHour {
-		var hour int
-		fmt.Sscanf(hourStr, "%d", &hour)
-		output.RequestsByHour[hour] = count
-	}
-	for hourStr, tokens := range apiResp.Usage.TokensByHour {
-		var hour int
-		fmt.Sscanf(hourStr, "%d", &hour)
-		output.TokensByHour[hour] = tokens
-	}
-
-	// Convert APIs
-	for apiKey, apiStats := range apiResp.Usage.APIs {
-		pAPI := &persistedAPI{
-			TotalRequests: apiStats.TotalRequests,
-			TotalTokens:   apiStats.TotalTokens,
-			Models:        make(map[string]*persistedModel),
-		}
-		for modelName, modelStats := range apiStats.Models {
-			pAPI.Models[modelName] = &persistedModel{
-				TotalRequests: modelStats.TotalRequests,
-				TotalTokens:   modelStats.TotalTokens,
-				Details:       modelStats.Details,
-			}
-		}
-		output.APIs[apiKey] = pAPI
-	}
-
-	// Ensure output directory exists
 	outputDir := filepath.Dir(outputPath)
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
+	if err := os.MkdirAll(outputDir, 0o755); err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating output directory: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Write output
 	outputData, err := json.MarshalIndent(output, "", "  ")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error marshaling output: %v\n", err)
 		os.Exit(1)
 	}
 
-	if err := os.WriteFile(outputPath, outputData, 0644); err != nil {
+	if err := os.WriteFile(outputPath, outputData, 0o600); err != nil {
 		fmt.Fprintf(os.Stderr, "Error writing output file: %v\n", err)
 		os.Exit(1)
 	}
@@ -183,8 +129,152 @@ func main() {
 	fmt.Printf("Successfully converted usage statistics\n")
 	fmt.Printf("  Input:  %s\n", inputPath)
 	fmt.Printf("  Output: %s\n", outputPath)
-	fmt.Printf("  Total requests: %d\n", output.TotalRequests)
-	fmt.Printf("  Total tokens:   %d\n", output.TotalTokens)
-	fmt.Printf("  Success count:  %d\n", output.SuccessCount)
-	fmt.Printf("  Failure count:  %d\n", output.FailureCount)
+	fmt.Printf("  Total requests: %d\n", output.Usage.TotalRequests)
+	fmt.Printf("  Total tokens:   %d\n", output.Usage.TotalTokens)
+	fmt.Printf("  Success count:  %d\n", output.Usage.SuccessCount)
+	fmt.Printf("  Failure count:  %d\n", output.Usage.FailureCount)
+}
+
+func decodeUsageImportPayload(data []byte) (usageImportPayload, error) {
+	var payload usageImportPayload
+	if err := json.Unmarshal(data, &payload); err == nil {
+		return payload, nil
+	}
+	var legacy legacyUsageImportPayload
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return usageImportPayload{}, err
+	}
+	return usageImportPayload{Version: legacy.Version, Usage: convertLegacyStatisticsImport(legacy.Usage)}, nil
+}
+
+func convertLegacyStatisticsImport(in legacyStatisticsImport) internalusage.StatisticsSnapshot {
+	out := internalusage.StatisticsSnapshot{
+		TotalRequests:  in.TotalRequests,
+		SuccessCount:   in.SuccessCount,
+		FailureCount:   in.FailureCount,
+		TotalTokens:    in.TotalTokens,
+		APIs:           make(map[string]internalusage.APISnapshot, len(in.APIs)),
+		RequestsByDay:  in.RequestsByDay,
+		RequestsByHour: in.RequestsByHour,
+		TokensByDay:    in.TokensByDay,
+		TokensByHour:   in.TokensByHour,
+	}
+	for apiName, api := range in.APIs {
+		models := make(map[string]internalusage.ModelSnapshot, len(api.Models))
+		for modelName, model := range api.Models {
+			details := make([]internalusage.RequestDetail, 0, len(model.Details))
+			for _, detail := range model.Details {
+				details = append(details, internalusage.RequestDetail{
+					Timestamp: detail.Timestamp,
+					Source:    detail.Source,
+					AuthIndex: decodeLegacyAuthIndex(detail.AuthIndex),
+					Tokens:    detail.Tokens,
+					Failed:    detail.Failed,
+				})
+			}
+			models[modelName] = internalusage.ModelSnapshot{
+				TotalRequests: model.TotalRequests,
+				SuccessCount:  model.SuccessCount,
+				FailureCount:  model.FailureCount,
+				TotalTokens:   model.TotalTokens,
+				InputTokens:   model.InputTokens,
+				OutputTokens:  model.OutputTokens,
+				Details:       details,
+			}
+		}
+		out.APIs[apiName] = internalusage.APISnapshot{
+			TotalRequests: api.TotalRequests,
+			SuccessCount:  api.SuccessCount,
+			FailureCount:  api.FailureCount,
+			TotalTokens:   api.TotalTokens,
+			InputTokens:   api.InputTokens,
+			OutputTokens:  api.OutputTokens,
+			Models:        models,
+		}
+	}
+	return out
+}
+
+func decodeLegacyAuthIndex(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	var n int64
+	if err := json.Unmarshal(raw, &n); err == nil {
+		return fmt.Sprintf("%d", n)
+	}
+	var u uint64
+	if err := json.Unmarshal(raw, &u); err == nil {
+		return fmt.Sprintf("%d", u)
+	}
+	return ""
+}
+
+func cloneRollingState(snapshot internalusage.RollingStateSnapshot) internalusage.RollingStateSnapshot {
+	result := internalusage.RollingStateSnapshot{
+		CoverageStart: snapshot.CoverageStart,
+		CoverageEnd:   snapshot.CoverageEnd,
+	}
+	if len(snapshot.MinuteBuckets) > 0 {
+		result.MinuteBuckets = make(map[string]internalusage.RollingMinuteBucket, len(snapshot.MinuteBuckets))
+		for minute, bucket := range snapshot.MinuteBuckets {
+			result.MinuteBuckets[minute] = bucket
+		}
+	}
+	return result
+}
+
+func aggregatedSnapshotFromStatistics(snapshot internalusage.StatisticsSnapshot) internalusage.AggregatedStatisticsSnapshot {
+	result := internalusage.AggregatedStatisticsSnapshot{
+		TotalRequests:  snapshot.TotalRequests,
+		SuccessCount:   snapshot.SuccessCount,
+		FailureCount:   snapshot.FailureCount,
+		TotalTokens:    snapshot.TotalTokens,
+		APIs:           make(map[string]internalusage.AggregatedAPISnapshot, len(snapshot.APIs)),
+		Breakdowns:     snapshot.Breakdowns,
+		RequestsByDay:  make(map[string]int64, len(snapshot.RequestsByDay)),
+		RequestsByHour: make(map[string]int64, len(snapshot.RequestsByHour)),
+		TokensByDay:    make(map[string]int64, len(snapshot.TokensByDay)),
+		TokensByHour:   make(map[string]int64, len(snapshot.TokensByHour)),
+		RollingState:   cloneRollingState(snapshot.RollingState),
+	}
+	for apiName, api := range snapshot.APIs {
+		models := make(map[string]internalusage.AggregatedModelSnapshot, len(api.Models))
+		for modelName, model := range api.Models {
+			models[modelName] = internalusage.AggregatedModelSnapshot{
+				TotalRequests: model.TotalRequests,
+				SuccessCount:  model.SuccessCount,
+				FailureCount:  model.FailureCount,
+				TotalTokens:   model.TotalTokens,
+				InputTokens:   model.InputTokens,
+				OutputTokens:  model.OutputTokens,
+			}
+		}
+		result.APIs[apiName] = internalusage.AggregatedAPISnapshot{
+			TotalRequests: api.TotalRequests,
+			SuccessCount:  api.SuccessCount,
+			FailureCount:  api.FailureCount,
+			TotalTokens:   api.TotalTokens,
+			InputTokens:   api.InputTokens,
+			OutputTokens:  api.OutputTokens,
+			Models:        models,
+		}
+	}
+	for k, v := range snapshot.RequestsByDay {
+		result.RequestsByDay[k] = v
+	}
+	for k, v := range snapshot.RequestsByHour {
+		result.RequestsByHour[k] = v
+	}
+	for k, v := range snapshot.TokensByDay {
+		result.TokensByDay[k] = v
+	}
+	for k, v := range snapshot.TokensByHour {
+		result.TokensByHour[k] = v
+	}
+	return result
 }

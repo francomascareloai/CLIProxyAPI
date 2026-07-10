@@ -27,6 +27,9 @@ type ConvertOpenAIResponseToAnthropicParams struct {
 	CreatedAt   int64
 	ToolNameMap map[string]string
 	SawToolCall bool
+	// UsageServiceTier tracks the effective upstream service tier so it can be
+	// reflected back into Anthropic usage.service_tier / usage.speed.
+	UsageServiceTier string
 	// Content accumulator for streaming
 	ContentAccumulator strings.Builder
 	// Tool calls accumulator for streaming
@@ -82,6 +85,7 @@ func ConvertOpenAIResponseToClaude(_ context.Context, _ string, originalRequestR
 			CreatedAt:                   0,
 			ToolNameMap:                 nil,
 			SawToolCall:                 false,
+			UsageServiceTier:            "",
 			ContentAccumulator:          strings.Builder{},
 			ToolCallsAccumulator:        nil,
 			TextContentBlockStarted:     false,
@@ -143,6 +147,9 @@ func convertOpenAIStreamingChunkToAnthropic(rawJSON []byte, param *ConvertOpenAI
 	}
 	if param.CreatedAt == 0 {
 		param.CreatedAt = root.Get("created").Int()
+	}
+	if tier := extractOpenAIServiceTier(root); tier != "" {
+		param.UsageServiceTier = tier
 	}
 
 	// Emit message_start on the very first chunk, regardless of whether it has a role field.
@@ -323,6 +330,7 @@ func convertOpenAIStreamingChunkToAnthropic(rawJSON []byte, param *ConvertOpenAI
 			if cachedTokens > 0 {
 				messageDeltaJSON, _ = sjson.Set(messageDeltaJSON, "usage.cache_read_input_tokens", cachedTokens)
 			}
+			messageDeltaJSON = setAnthropicUsageServiceTier(messageDeltaJSON, param.UsageServiceTier)
 			results = append(results, "event: message_delta\ndata: "+messageDeltaJSON+"\n\n")
 			param.MessageDeltaSent = true
 
@@ -372,6 +380,7 @@ func convertOpenAIDoneToAnthropic(param *ConvertOpenAIResponseToAnthropicParams)
 	if param.FinishReason != "" && !param.MessageDeltaSent {
 		messageDeltaJSON := `{"type":"message_delta","delta":{"stop_reason":"","stop_sequence":null},"usage":{"input_tokens":0,"output_tokens":0}}`
 		messageDeltaJSON, _ = sjson.Set(messageDeltaJSON, "delta.stop_reason", mapOpenAIFinishReasonToAnthropic(effectiveOpenAIFinishReason(param)))
+		messageDeltaJSON = setAnthropicUsageServiceTier(messageDeltaJSON, param.UsageServiceTier)
 		results = append(results, "event: message_delta\ndata: "+messageDeltaJSON+"\n\n")
 		param.MessageDeltaSent = true
 	}
@@ -449,6 +458,7 @@ func convertOpenAINonStreamingToAnthropic(rawJSON []byte) []string {
 			out, _ = sjson.Set(out, "usage.cache_read_input_tokens", cachedTokens)
 		}
 	}
+	out = setAnthropicUsageServiceTier(out, extractOpenAIServiceTier(root))
 
 	return []string{out}
 }
@@ -699,6 +709,7 @@ func ConvertOpenAIResponseToClaudeNonStream(_ context.Context, _ string, origina
 			out, _ = sjson.Set(out, "usage.cache_read_input_tokens", cachedTokens)
 		}
 	}
+	out = setAnthropicUsageServiceTier(out, extractOpenAIServiceTier(root))
 
 	if !stopReasonSet {
 		if hasToolCall {
@@ -733,4 +744,33 @@ func extractOpenAIUsage(usage gjson.Result) (int64, int64, int64) {
 	}
 
 	return inputTokens, outputTokens, cachedTokens
+}
+
+func extractOpenAIServiceTier(root gjson.Result) string {
+	for _, candidate := range []string{
+		root.Get("service_tier").String(),
+		root.Get("usage.service_tier").String(),
+	} {
+		tier := strings.ToLower(strings.TrimSpace(candidate))
+		switch tier {
+		case "priority":
+			return "priority"
+		case "default", "auto", "flex":
+			return "standard"
+		}
+	}
+	return ""
+}
+
+func setAnthropicUsageServiceTier(payload, tier string) string {
+	tier = strings.ToLower(strings.TrimSpace(tier))
+	switch tier {
+	case "priority":
+		payload, _ = sjson.Set(payload, "usage.service_tier", "priority")
+		payload, _ = sjson.Set(payload, "usage.speed", "fast")
+	case "standard":
+		payload, _ = sjson.Set(payload, "usage.service_tier", "standard")
+		payload, _ = sjson.Set(payload, "usage.speed", "standard")
+	}
+	return payload
 }

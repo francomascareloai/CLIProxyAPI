@@ -18,6 +18,8 @@ BENCHMARKS=(
   "BenchmarkUnifiedModelsCacheHitOpenAI"
   "BenchmarkUnifiedModelsCacheHitClaude"
   "BenchmarkMetricsHandler"
+  "BenchmarkCodexExecutorNonStreamIncremental"
+  "BenchmarkCodexExecutorCompact"
 )
 
 fail() {
@@ -94,7 +96,11 @@ run_benchmark() {
   local output
   output="$(
     cd "$ROOT_DIR"
-    go test ./internal/api -run '^$' -bench "^${benchmark_name}$" -benchmem -count "$BENCH_COUNT" -benchtime "$BENCH_TIME"
+    if [[ "$benchmark_name" == BenchmarkCodexExecutor* ]]; then
+      go test ./internal/runtime/executor -run '^$' -bench "^${benchmark_name}$" -benchmem -count "$BENCH_COUNT" -benchtime "$BENCH_TIME"
+    else
+      go test ./internal/api -run '^$' -bench "^${benchmark_name}$" -benchmem -count "$BENCH_COUNT" -benchtime "$BENCH_TIME"
+    fi
   )"
 
   mapfile -t ns_values < <(extract_metric_values "$output" "ns/op")

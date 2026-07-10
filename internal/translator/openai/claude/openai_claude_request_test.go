@@ -246,6 +246,61 @@ func TestConvertClaudeRequestToOpenAI_ThinkingToReasoningContent(t *testing.T) {
 	}
 }
 
+func TestConvertClaudeRequestToOpenAI_ServiceTierMapping(t *testing.T) {
+	tests := []struct {
+		name            string
+		inputJSON       string
+		wantServiceTier string
+	}{
+		{
+			name: "fast speed maps to priority tier",
+			inputJSON: `{
+				"model": "claude-sonnet-4-5",
+				"speed": "fast",
+				"messages": [{"role": "user", "content": [{"type":"text","text":"ping"}]}]
+			}`,
+			wantServiceTier: "priority",
+		},
+		{
+			name: "standard_only maps to default tier",
+			inputJSON: `{
+				"model": "claude-sonnet-4-5",
+				"service_tier": "standard_only",
+				"messages": [{"role": "user", "content": [{"type":"text","text":"ping"}]}]
+			}`,
+			wantServiceTier: "default",
+		},
+		{
+			name: "auto is preserved for later policy injection",
+			inputJSON: `{
+				"model": "claude-sonnet-4-5",
+				"service_tier": "auto",
+				"messages": [{"role": "user", "content": [{"type":"text","text":"ping"}]}]
+			}`,
+			wantServiceTier: "auto",
+		},
+		{
+			name: "standard_only wins over contradictory fast speed",
+			inputJSON: `{
+				"model": "claude-sonnet-4-5",
+				"service_tier": "standard_only",
+				"speed": "fast",
+				"messages": [{"role": "user", "content": [{"type":"text","text":"ping"}]}]
+			}`,
+			wantServiceTier: "default",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ConvertClaudeRequestToOpenAI("gpt-5.4(high)", []byte(tt.inputJSON), false)
+			if tier := gjson.GetBytes(got, "service_tier").String(); tier != tt.wantServiceTier {
+				t.Fatalf("service_tier = %q, want %q", tier, tt.wantServiceTier)
+			}
+		})
+	}
+}
+
 // TestConvertClaudeRequestToOpenAI_ThinkingOnlyMessagePreserved tests AC3:
 // that a message with only thinking content is preserved (not dropped).
 func TestConvertClaudeRequestToOpenAI_ThinkingOnlyMessagePreserved(t *testing.T) {

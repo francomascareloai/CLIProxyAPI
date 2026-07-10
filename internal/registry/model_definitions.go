@@ -28,6 +28,7 @@ type staticModelsJSON struct {
 	Qwen        []*ModelInfo                       `json:"qwen"`
 	IFlow       []*ModelInfo                       `json:"iflow"`
 	Kimi        []*ModelInfo                       `json:"kimi"`
+	MiniMax     []*ModelInfo                       `json:"minimax"`
 	Antigravity map[string]*AntigravityModelConfig `json:"antigravity"`
 }
 
@@ -89,6 +90,11 @@ func GetIFlowModels() []*ModelInfo {
 // GetKimiModels returns the standard Kimi (Moonshot AI) model definitions.
 func GetKimiModels() []*ModelInfo {
 	return cloneModelInfos(getModels().Kimi)
+}
+
+// GetMiniMaxModels returns the standard MiniMax model definitions.
+func GetMiniMaxModels() []*ModelInfo {
+	return cloneModelInfos(getModels().MiniMax)
 }
 
 // GetAntigravityModelConfig returns static configuration for antigravity models.
@@ -167,6 +173,8 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetIFlowModels()
 	case "kimi":
 		return GetKimiModels()
+	case "minimax":
+		return GetMiniMaxModels()
 	case "antigravity":
 		cfg := GetAntigravityModelConfig()
 		if len(cfg) == 0 {

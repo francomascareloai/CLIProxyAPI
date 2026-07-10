@@ -145,6 +145,7 @@ func validateModelsCatalog(data *staticModelsJSON) error {
 		{name: "qwen", models: data.Qwen},
 		{name: "iflow", models: data.IFlow},
 		{name: "kimi", models: data.Kimi},
+		{name: "minimax", models: data.MiniMax},
 	}
 
 	for _, section := range requiredSections {

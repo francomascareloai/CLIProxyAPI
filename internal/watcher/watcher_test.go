@@ -475,7 +475,9 @@ func TestAddOrUpdateClientRecentStatMatchSkipsOnlyBurstDuplicates(t *testing.T) 
 		seenAtUnix:  time.Now().Add(-2 * authStatDedupWindow).UnixNano(),
 	}
 	w.addOrUpdateClient(authFile)
-	waitForAtomicInt32(t, &reloads, 1, 2*time.Second)
+	if got := atomic.LoadInt32(&reloads); got != 0 {
+		t.Fatalf("expected stale stat re-read to stay incremental, got %d reloads", got)
+	}
 
 	sum := sha256.Sum256(content)
 	wantHash := hexString(sum[:])

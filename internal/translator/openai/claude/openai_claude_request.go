@@ -59,6 +59,11 @@ func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 	// Stream
 	out, _ = sjson.Set(out, "stream", stream)
 
+	// Claude Messages API exposes service_tier (auto|standard_only) and speed
+	// (standard|fast). Preserve the operational intent on OpenAI-compatible
+	// upstreams by translating them into OpenAI service_tier semantics.
+	out = applyClaudeServiceTierToOpenAI(out, root)
+
 	// Thinking: Convert Claude thinking.budget_tokens to OpenAI reasoning_effort
 	if thinkingConfig := root.Get("thinking"); thinkingConfig.Exists() && thinkingConfig.IsObject() {
 		if thinkingType := thinkingConfig.Get("type"); thinkingType.Exists() {
@@ -326,6 +331,25 @@ func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 	}
 
 	return []byte(out)
+}
+
+func applyClaudeServiceTierToOpenAI(out string, root gjson.Result) string {
+	speed := strings.ToLower(strings.TrimSpace(root.Get("speed").String()))
+	serviceTier := strings.ToLower(strings.TrimSpace(root.Get("service_tier").String()))
+
+	switch {
+	case serviceTier == "standard_only":
+		out, _ = sjson.Set(out, "service_tier", "default")
+	case speed == "fast":
+		out, _ = sjson.Set(out, "service_tier", "priority")
+	case speed == "standard":
+		out, _ = sjson.Set(out, "service_tier", "default")
+	case serviceTier == "auto":
+		// Preserve auto so later operational policy can still upgrade it.
+		out, _ = sjson.Set(out, "service_tier", "auto")
+	}
+
+	return out
 }
 
 func convertClaudeContentPart(part gjson.Result) (string, bool) {

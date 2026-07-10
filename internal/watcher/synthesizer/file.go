@@ -149,6 +149,28 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 			}
 		}
 	}
+	if rawWebsockets, ok := metadata["websockets"]; ok {
+		switch v := rawWebsockets.(type) {
+		case bool:
+			if v {
+				a.Attributes["websockets"] = "true"
+			}
+		case string:
+			if parsed, errParse := strconv.ParseBool(strings.TrimSpace(v)); errParse == nil && parsed {
+				a.Attributes["websockets"] = "true"
+			}
+		}
+	}
+	if rawStrategy, ok := metadata["non_stream_strategy"]; ok {
+		if strategy := normalizeCodexNonStreamStrategy(fmt.Sprint(rawStrategy)); strategy != "" {
+			a.Attributes["non_stream_strategy"] = strategy
+		}
+	}
+	if rawStrategy, ok := metadata["non-stream-strategy"]; ok {
+		if strategy := normalizeCodexNonStreamStrategy(fmt.Sprint(rawStrategy)); strategy != "" {
+			a.Attributes["non_stream_strategy"] = strategy
+		}
+	}
 	ApplyAuthExcludedModelsMeta(a, cfg, perAccountExcluded, "oauth")
 	// For codex auth files, extract plan_type from the JWT id_token.
 	if provider == "codex" {

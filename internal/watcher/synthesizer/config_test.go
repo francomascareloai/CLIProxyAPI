@@ -231,11 +231,12 @@ func TestConfigSynthesizer_CodexKeys(t *testing.T) {
 		Config: &config.Config{
 			CodexKey: []config.CodexKey{
 				{
-					APIKey:     "codex-key-123",
-					Prefix:     "dev",
-					BaseURL:    "https://api.openai.com",
-					ProxyURL:   "http://proxy.local",
-					Websockets: true,
+					APIKey:            "codex-key-123",
+					Prefix:            "dev",
+					BaseURL:           "https://api.openai.com",
+					ProxyURL:          "http://proxy.local",
+					Websockets:        true,
+					NonStreamStrategy: "compact_auto",
 				},
 			},
 		},
@@ -262,6 +263,25 @@ func TestConfigSynthesizer_CodexKeys(t *testing.T) {
 	}
 	if auths[0].Attributes["websockets"] != "true" {
 		t.Errorf("expected websockets=true, got %s", auths[0].Attributes["websockets"])
+	}
+	if auths[0].Attributes["non_stream_strategy"] != "compact_auto" {
+		t.Errorf("expected non_stream_strategy=compact_auto, got %s", auths[0].Attributes["non_stream_strategy"])
+	}
+}
+
+func TestConfigSynthesizer_CodexKeys_NormalizesNonStreamStrategy(t *testing.T) {
+	synth := NewConfigSynthesizer()
+	ctx := &SynthesisContext{
+		Config: &config.Config{CodexKey: []config.CodexKey{{APIKey: "codex-key-123", NonStreamStrategy: "  WebSocket  "}}},
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+	auths, err := synth.Synthesize(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := auths[0].Attributes["non_stream_strategy"]; got != "websocket" {
+		t.Fatalf("non_stream_strategy = %q, want %q", got, "websocket")
 	}
 }
 

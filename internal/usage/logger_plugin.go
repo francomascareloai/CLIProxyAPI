@@ -67,6 +67,11 @@ func SetStatisticsEnabled(enabled bool) { statisticsEnabled.Store(enabled) }
 // StatisticsEnabled reports the current recording state.
 func StatisticsEnabled() bool { return statisticsEnabled.Load() }
 
+func ConfigureUsageRuntime(enabled bool, retentionDays int, replayMaxDays int) {
+	SetStatisticsEnabled(enabled)
+	ApplyUsageJournalConfig(enabled, retentionDays, replayMaxDays)
+}
+
 // Shutdown gracefully stops the usage statistics auto-save and performs a final save.
 // This should be called when the service is shutting down.
 func Shutdown() {
@@ -1362,6 +1367,16 @@ func (s *RequestStatistics) ReplaceAggregatedSnapshot(snapshot AggregatedStatist
 
 	// A restored snapshot is the current persisted baseline, not new dirty state.
 	s.dirty.Store(false)
+}
+
+func (s *RequestStatistics) ReplaceRollingState(snapshot RollingStateSnapshot) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rollingCoverageStart, s.rollingCoverageEnd, s.rollingMinuteBuckets = restoreRollingState(snapshot)
+	s.dirty.Store(true)
 }
 
 type AggregatedStatisticsSnapshot struct {

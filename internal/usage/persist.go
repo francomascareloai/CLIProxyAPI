@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -270,10 +271,27 @@ func (p *UsagePersister) loadIntoStore() error {
 		return fmt.Errorf("unsupported version %d", payload.Version)
 	}
 	payload.Usage = sanitiseAggregatedSnapshot(payload.Usage)
-	p.stats.ReplaceAggregatedSnapshot(payload.Usage)
+	now := time.Now().UTC()
+	replayedUsage := payload.Usage
+	journalReplay, replayLoaded, replayErr := loadUsageJournalReplay(now)
+	if replayErr != nil {
+		log.Warnf("usage: journal replay skipped: %v", replayErr)
+	} else {
+		replayedUsage.RollingState = overlayRollingStateSnapshot(replayedUsage.RollingState, journalReplay, now)
+		if replayLoaded > 0 {
+			recordUsageJournalReplay(now, "usage_journal")
+		}
+	}
+	p.stats.ReplaceAggregatedSnapshot(replayedUsage)
 	if payload.Version == 1 || payload.Version == 2 {
 		if err := p.flush(true); err != nil {
 			return fmt.Errorf("migrate canonical usage stats v%d->v%d: %w", payload.Version, usagePersistenceVersion, err)
+		}
+		return nil
+	}
+	if replayErr == nil && replayLoaded > 0 && !rollingStateSnapshotsEqual(payload.Usage.RollingState, replayedUsage.RollingState) {
+		if err := p.flush(true); err != nil {
+			log.Warnf("usage: journal replay flush skipped: %v", err)
 		}
 	}
 	return nil
@@ -294,9 +312,10 @@ func (p *UsagePersister) flush(force bool) error {
 	snapshot := p.stats.SnapshotAggregated()
 	snapshot = sanitiseAggregatedSnapshot(snapshot)
 
+	now := time.Now().UTC()
 	payload := persistedUsageStats{
 		Version:    usagePersistenceVersion,
-		ExportedAt: time.Now().UTC(),
+		ExportedAt: now,
 		Usage:      snapshot,
 	}
 	data, err := json.Marshal(payload)
@@ -315,6 +334,12 @@ func (p *UsagePersister) flush(force bool) error {
 		return err
 	}
 	if err := writeAtomicFile(statsPath, data, 0o600); err != nil {
+		if !force {
+			p.stats.dirty.Store(true)
+		}
+		return err
+	}
+	if err := writeUsageJournal(snapshot, now); err != nil {
 		if !force {
 			p.stats.dirty.Store(true)
 		}
@@ -343,6 +368,38 @@ func sanitiseAggregatedSnapshot(snapshot AggregatedStatisticsSnapshot) Aggregate
 	coverageStart, coverageEnd, minuteBuckets := restoreRollingState(snapshot.RollingState)
 	out.RollingState = cloneRollingStateSnapshot(snapshotRollingState(coverageStart, coverageEnd, minuteBuckets, time.Now().UTC()))
 	return out
+}
+
+func overlayRollingStateSnapshot(base RollingStateSnapshot, overlay RollingStateSnapshot, now time.Time) RollingStateSnapshot {
+	baseCoverageStart, baseCoverageEnd, baseBuckets := restoreRollingState(base)
+	overlayCoverageStart, overlayCoverageEnd, overlayBuckets := restoreRollingState(overlay)
+	if len(baseBuckets) == 0 && len(overlayBuckets) == 0 {
+		return RollingStateSnapshot{}
+	}
+	merged := cloneRollingMinuteBuckets(baseBuckets)
+	if len(overlayBuckets) > 0 {
+		if merged == nil {
+			merged = make(map[int64]RollingMinuteBucket, len(overlayBuckets))
+		}
+		for minute, bucket := range overlayBuckets {
+			merged[minute] = bucket
+		}
+	}
+	coverageStart := baseCoverageStart
+	if coverageStart.IsZero() || (!overlayCoverageStart.IsZero() && overlayCoverageStart.Before(coverageStart)) {
+		coverageStart = overlayCoverageStart
+	}
+	coverageEnd := baseCoverageEnd
+	if coverageEnd.IsZero() || (!overlayCoverageEnd.IsZero() && overlayCoverageEnd.After(coverageEnd)) {
+		coverageEnd = overlayCoverageEnd
+	}
+	return cloneRollingStateSnapshot(snapshotRollingState(coverageStart, coverageEnd, merged, now.UTC()))
+}
+
+func rollingStateSnapshotsEqual(left RollingStateSnapshot, right RollingStateSnapshot) bool {
+	left = cloneRollingStateSnapshot(left)
+	right = cloneRollingStateSnapshot(right)
+	return reflect.DeepEqual(left, right)
 }
 
 func sanitiseUsageBreakdownsSnapshot(snapshot UsageBreakdownsSnapshot) UsageBreakdownsSnapshot {

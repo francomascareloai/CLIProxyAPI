@@ -118,6 +118,20 @@ func loadTempSnapshots(mainPath string) ([]snapshotCandidate, error) {
 	return out, nil
 }
 
+func cloneRollingState(snapshot internalusage.RollingStateSnapshot) internalusage.RollingStateSnapshot {
+	result := internalusage.RollingStateSnapshot{
+		CoverageStart: snapshot.CoverageStart,
+		CoverageEnd:   snapshot.CoverageEnd,
+	}
+	if len(snapshot.MinuteBuckets) > 0 {
+		result.MinuteBuckets = make(map[string]internalusage.RollingMinuteBucket, len(snapshot.MinuteBuckets))
+		for minute, bucket := range snapshot.MinuteBuckets {
+			result.MinuteBuckets[minute] = bucket
+		}
+	}
+	return result
+}
+
 func cloneAggregated(in internalusage.AggregatedStatisticsSnapshot) internalusage.AggregatedStatisticsSnapshot {
 	out := internalusage.AggregatedStatisticsSnapshot{
 		TotalRequests:  in.TotalRequests,
@@ -125,10 +139,12 @@ func cloneAggregated(in internalusage.AggregatedStatisticsSnapshot) internalusag
 		FailureCount:   in.FailureCount,
 		TotalTokens:    in.TotalTokens,
 		APIs:           make(map[string]internalusage.AggregatedAPISnapshot, len(in.APIs)),
+		Breakdowns:     in.Breakdowns,
 		RequestsByDay:  make(map[string]int64, len(in.RequestsByDay)),
 		RequestsByHour: make(map[string]int64, len(in.RequestsByHour)),
 		TokensByDay:    make(map[string]int64, len(in.TokensByDay)),
 		TokensByHour:   make(map[string]int64, len(in.TokensByHour)),
+		RollingState:   cloneRollingState(in.RollingState),
 	}
 	for k, v := range in.APIs {
 		models := make(map[string]internalusage.AggregatedModelSnapshot, len(v.Models))
@@ -136,9 +152,16 @@ func cloneAggregated(in internalusage.AggregatedStatisticsSnapshot) internalusag
 			models[mk] = mv
 		}
 		out.APIs[k] = internalusage.AggregatedAPISnapshot{
-			TotalRequests: v.TotalRequests,
-			TotalTokens:   v.TotalTokens,
-			Models:        models,
+			TotalRequests:   v.TotalRequests,
+			SuccessCount:    v.SuccessCount,
+			FailureCount:    v.FailureCount,
+			TotalTokens:     v.TotalTokens,
+			InputTokens:     v.InputTokens,
+			OutputTokens:    v.OutputTokens,
+			ReasoningTokens: v.ReasoningTokens,
+			CachedTokens:    v.CachedTokens,
+			LastUsed:        v.LastUsed,
+			Models:          models,
 		}
 	}
 	for k, v := range in.RequestsByDay {

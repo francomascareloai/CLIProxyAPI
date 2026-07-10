@@ -13,6 +13,15 @@ import (
 // It handles Gemini, Claude, Codex, OpenAI-compat, and Vertex-compat providers.
 type ConfigSynthesizer struct{}
 
+func normalizeCodexNonStreamStrategy(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "compact_auto", "compact_force", "websocket":
+		return strings.ToLower(strings.TrimSpace(raw))
+	default:
+		return ""
+	}
+}
+
 // NewConfigSynthesizer creates a new ConfigSynthesizer instance.
 func NewConfigSynthesizer() *ConfigSynthesizer {
 	return &ConfigSynthesizer{}
@@ -162,6 +171,9 @@ func (s *ConfigSynthesizer) synthesizeCodexKeys(ctx *SynthesisContext) []*coreau
 		}
 		if ck.Websockets {
 			attrs["websockets"] = "true"
+		}
+		if strategy := normalizeCodexNonStreamStrategy(strings.TrimSpace(ck.NonStreamStrategy)); strategy != "" {
+			attrs["non_stream_strategy"] = strategy
 		}
 		if hash := diff.ComputeCodexModelsHash(ck.Models); hash != "" {
 			attrs["models_hash"] = hash

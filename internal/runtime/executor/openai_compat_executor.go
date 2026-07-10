@@ -17,6 +17,7 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 	log "github.com/sirupsen/logrus"
+	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
@@ -95,8 +96,18 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	originalPayload := originalPayloadSource
 	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, opts.Stream)
 	translated := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, opts.Stream)
+	translated = applyClaudeOpenAIPriorityConfig(e.cfg, from, translated)
 	requestedModel := payloadRequestedModel(opts, req.Model)
 	translated = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", translated, originalTranslated, requestedModel)
+	// Resolve upstream model name: if auth has a compat config with models that map
+	// an alias (client-side name) to a name (upstream model slug), override the body.
+	compat := e.resolveCompatConfig(auth)
+	if compat != nil {
+		upstreamModel := resolveUpstreamModel(req.Model, compat.Models)
+		if upstreamModel != "" {
+			translated = e.overrideModel(translated, upstreamModel)
+		}
+	}
 	if opts.Alt == "responses/compact" {
 		if updated, errDelete := sjson.DeleteBytes(translated, "stream"); errDelete == nil {
 			translated = updated
@@ -197,8 +208,16 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	originalPayload := originalPayloadSource
 	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, true)
 	translated := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, true)
+	translated = applyClaudeOpenAIPriorityConfig(e.cfg, from, translated)
 	requestedModel := payloadRequestedModel(opts, req.Model)
 	translated = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", translated, originalTranslated, requestedModel)
+	compat := e.resolveCompatConfig(auth)
+	if compat != nil {
+		upstreamModel := resolveUpstreamModel(req.Model, compat.Models)
+		if upstreamModel != "" {
+			translated = e.overrideModel(translated, upstreamModel)
+		}
+	}
 
 	translated, err = thinking.ApplyThinking(translated, req.Model, from.String(), to.String(), e.Identifier())
 	if err != nil {
@@ -379,6 +398,42 @@ func (e *OpenAICompatExecutor) overrideModel(payload []byte, model string) []byt
 		return payload
 	}
 	payload, _ = sjson.SetBytes(payload, "model", model)
+	return payload
+}
+
+// resolveUpstreamModel finds the upstream model name (Name) for a client-facing model name (Alias).
+// If no Alias matches, returns empty string (no override needed).
+func resolveUpstreamModel(clientModel string, models []config.OpenAICompatibilityModel) string {
+	clientModel = strings.TrimSpace(clientModel)
+	if clientModel == "" {
+		return ""
+	}
+	for _, m := range models {
+		alias := strings.TrimSpace(m.Alias)
+		if alias == "" {
+			continue
+		}
+		if alias == clientModel {
+			return strings.TrimSpace(m.Name)
+		}
+	}
+	return ""
+}
+
+func applyClaudeOpenAIPriorityConfig(cfg *config.Config, from sdktranslator.Format, payload []byte) []byte {
+	if cfg == nil || !cfg.ClaudeOpenAIPriority || from != sdktranslator.FromString("claude") || len(payload) == 0 {
+		return payload
+	}
+
+	currentTier := strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, "service_tier").String()))
+	switch currentTier {
+	case "", "auto":
+		updated, err := sjson.SetBytes(payload, "service_tier", "priority")
+		if err == nil {
+			return updated
+		}
+	}
+
 	return payload
 }
 

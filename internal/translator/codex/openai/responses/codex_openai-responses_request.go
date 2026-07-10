@@ -26,7 +26,15 @@ func ConvertOpenAIResponsesRequestToCodex(modelName string, inputRawJSON []byte,
 	rawJSON, _ = sjson.DeleteBytes(rawJSON, "temperature")
 	rawJSON, _ = sjson.DeleteBytes(rawJSON, "top_p")
 	if v := gjson.GetBytes(rawJSON, "service_tier"); v.Exists() {
-		if v.String() != "priority" {
+		switch v.String() {
+		case "fast":
+			// Codex CLI uses fast|flex, while OpenAI Responses exposes
+			// auto|default|flex|priority. For proxy-backed Codex flows, treat
+			// fast as the closest available upstream tier: priority.
+			rawJSON, _ = sjson.SetBytes(rawJSON, "service_tier", "priority")
+		case "flex", "priority":
+			// Preserve the tiers we explicitly support for Codex upstream.
+		default:
 			rawJSON, _ = sjson.DeleteBytes(rawJSON, "service_tier")
 		}
 	}

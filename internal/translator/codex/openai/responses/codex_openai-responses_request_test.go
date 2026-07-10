@@ -219,6 +219,71 @@ func TestConvertOpenAIResponsesRequestToCodex_OriginalIssue(t *testing.T) {
 	}
 }
 
+func TestConvertOpenAIResponsesRequestToCodex_ServiceTierCompatibility(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+		exists   bool
+	}{
+		{
+			name:     "fast maps to priority",
+			input:    "fast",
+			expected: "priority",
+			exists:   true,
+		},
+		{
+			name:     "flex is preserved",
+			input:    "flex",
+			expected: "flex",
+			exists:   true,
+		},
+		{
+			name:     "priority is preserved",
+			input:    "priority",
+			expected: "priority",
+			exists:   true,
+		},
+		{
+			name:   "default is removed",
+			input:  "default",
+			exists: false,
+		},
+		{
+			name:   "auto is removed",
+			input:  "auto",
+			exists: false,
+		},
+		{
+			name:   "unknown tier is removed",
+			input:  "turbo",
+			exists: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inputJSON := []byte(`{
+				"model": "gpt-5.2",
+				"service_tier": "` + tt.input + `",
+				"input": "ping"
+			}`)
+
+			output := ConvertOpenAIResponsesRequestToCodex("gpt-5.2", inputJSON, false)
+			outputStr := string(output)
+			serviceTier := gjson.Get(outputStr, "service_tier")
+
+			if tt.exists != serviceTier.Exists() {
+				t.Fatalf("expected service_tier exists=%v, got exists=%v", tt.exists, serviceTier.Exists())
+			}
+
+			if tt.exists && serviceTier.String() != tt.expected {
+				t.Fatalf("expected service_tier=%q, got %q", tt.expected, serviceTier.String())
+			}
+		})
+	}
+}
+
 // TestConvertSystemRoleToDeveloper_AssistantRole tests that assistant role is preserved
 func TestConvertSystemRoleToDeveloper_AssistantRole(t *testing.T) {
 	inputJSON := []byte(`{

@@ -68,6 +68,11 @@ logging-to-file: false
 # files are deleted until within the limit. Set to 0 to disable.
 logs-max-total-size-mb: 0
 
+# When true, Claude-originated requests translated to OpenAI-compatible upstreams
+# will request OpenAI priority tier unless the translated payload already forces a
+# stricter non-priority tier. Useful for Claude Code -> GPT-5.x via CLIProxy.
+claude-openai-priority: false
+
 # Maximum number of error log files retained when request logging is disabled.
 # When exceeded, the oldest error log files are deleted. Default is 10. Set to 0 to disable cleanup.
 error-logs-max-files: 10

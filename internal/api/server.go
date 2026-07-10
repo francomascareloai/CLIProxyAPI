@@ -569,6 +569,12 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/usage-statistics-enabled", s.mgmt.GetUsageStatisticsEnabled)
 		mgmt.PUT("/usage-statistics-enabled", s.mgmt.PutUsageStatisticsEnabled)
 		mgmt.PATCH("/usage-statistics-enabled", s.mgmt.PutUsageStatisticsEnabled)
+		mgmt.GET("/usage-journal-retention-days", s.mgmt.GetUsageJournalRetentionDays)
+		mgmt.PUT("/usage-journal-retention-days", s.mgmt.PutUsageJournalRetentionDays)
+		mgmt.PATCH("/usage-journal-retention-days", s.mgmt.PutUsageJournalRetentionDays)
+		mgmt.GET("/usage-journal-replay-max-days", s.mgmt.GetUsageJournalReplayMaxDays)
+		mgmt.PUT("/usage-journal-replay-max-days", s.mgmt.PutUsageJournalReplayMaxDays)
+		mgmt.PATCH("/usage-journal-replay-max-days", s.mgmt.PutUsageJournalReplayMaxDays)
 
 		mgmt.GET("/proxy-url", s.mgmt.GetProxyURL)
 		mgmt.PUT("/proxy-url", s.mgmt.PutProxyURL)
@@ -715,6 +721,15 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 		c.AbortWithStatus(http.StatusNotFound)
 		return
 	}
+	staticDir := managementasset.StaticDir(s.configFilePath)
+	if strings.TrimSpace(staticDir) == "" {
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+	if !managementasset.EnsureLatestManagementHTML(context.Background(), staticDir, cfg.ProxyURL, cfg.RemoteManagement.PanelGitHubRepository) {
+		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "management control panel unavailable"})
+		return
+	}
 	filePath := managementasset.FilePath(s.configFilePath)
 	if strings.TrimSpace(filePath) == "" {
 		c.AbortWithStatus(http.StatusNotFound)
@@ -723,17 +738,17 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 
 	if _, err := os.Stat(filePath); err != nil {
 		if os.IsNotExist(err) {
-			// Synchronously ensure management.html is available with a detached context.
-			// Control panel bootstrap should not be canceled by client disconnects.
-			if !managementasset.EnsureLatestManagementHTML(context.Background(), managementasset.StaticDir(s.configFilePath), cfg.ProxyURL, cfg.RemoteManagement.PanelGitHubRepository) {
-				c.AbortWithStatus(http.StatusNotFound)
-				return
-			}
-		} else {
-			log.WithError(err).Error("failed to stat management control panel asset")
-			c.AbortWithStatus(http.StatusInternalServerError)
+			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "management control panel unavailable"})
 			return
 		}
+		log.WithError(err).Error("failed to stat management control panel asset")
+		c.AbortWithStatus(http.StatusInternalServerError)
+		return
+	}
+	if err := managementasset.ValidateManagementHTMLFile(filePath); err != nil {
+		log.WithError(err).Warn("refusing to serve invalid management control panel asset")
+		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "management control panel unavailable"})
+		return
 	}
 
 	c.File(filePath)
@@ -892,41 +907,57 @@ func (s *Server) metricsHandler(c *gin.Context) {
 	}
 
 	help := map[string]string{
-		"cliproxy_models_cache_hit_total":                "Total number of /v1/models cache hits.",
-		"cliproxy_models_cache_miss_total":               "Total number of /v1/models cache misses.",
-		"cliproxy_models_cache_build_total":              "Total number of /v1/models payload builds.",
-		"cliproxy_models_cache_invalidate_total":         "Total number of /v1/models cache invalidations.",
-		"cliproxy_server_full_update_total":              "Total number of full server config updates.",
-		"cliproxy_server_incremental_update_total":       "Total number of incremental auth snapshot updates.",
-		"cliproxy_models_cache_version_current":          "Current cache version for /v1/models.",
-		"cliproxy_models_cache_entries_current":          "Current /v1/models cache entries in memory.",
-		"cliproxy_process_goroutines_current":            "Current number of goroutines in process.",
-		"cliproxy_process_open_fds_current":              "Current open file descriptors (best-effort).",
-		"cliproxy_models_cache_strategy_ttl_legacy":      "Current /v1/models cache strategy flag (1=ttl_legacy, 0=versioned).",
-		"cliproxy_models_cache_requests_total":           "Total number of /v1/models cache lookup requests.",
-		"cliproxy_models_cache_hit_ratio":                "Current /v1/models cache hit ratio.",
-		"cliproxy_watcher_config_reload_requested_total": "Total number of watcher config reload requests.",
-		"cliproxy_watcher_config_reload_executed_total":  "Total number of watcher config reload executions.",
-		"cliproxy_watcher_config_reload_coalesced_total": "Total number of watcher config reload coalesced events.",
-		"cliproxy_watcher_auth_reload_requested_total":   "Total number of watcher auth reload requests.",
-		"cliproxy_watcher_auth_reload_executed_total":    "Total number of watcher auth reload executions.",
-		"cliproxy_watcher_auth_reload_coalesced_total":   "Total number of watcher auth reload coalesced events.",
-		"cliproxy_reload_requested_total":                "Total number of service reload callback requests.",
-		"cliproxy_reload_executed_total":                 "Total number of service reload callback executions.",
-		"cliproxy_reload_dropped_stale_total":            "Total number of stale service reload callbacks dropped.",
-		"cliproxy_provider_backpressure_reject_total":    "Total number of provider requests rejected due to inflight backpressure.",
-		"cliproxy_provider_circuit_open_total":           "Total number of provider requests rejected while circuit breaker was open.",
-		"cliproxy_provider_adaptive_increase_total":      "Total number of adaptive provider inflight limit increases.",
-		"cliproxy_provider_adaptive_decrease_total":      "Total number of adaptive provider inflight limit decreases.",
-		"cliproxy_provider_adaptive_limit_sum":           "Current sum of adaptive inflight limits across providers.",
-		"cliproxy_provider_adaptive_provider_count":      "Current number of providers tracked by adaptive inflight limiter.",
-		"cliproxy_provider_adaptive_enabled":             "Adaptive provider inflight limiter feature flag (1=enabled, 0=disabled).",
-		"cliproxy_provider_adaptive_rollback_total":      "Total number of adaptive limiter rollbacks triggered by SLO guardrails.",
-		"cliproxy_provider_adaptive_rollback_active":     "Current number of providers under adaptive rollback hold window.",
-		"cliproxy_autoprofile_capture_total":             "Total number of runtime auto-profile captures.",
-		"cliproxy_autoprofile_cooldown_skip_total":       "Total number of auto-profile triggers skipped due to cooldown.",
-		"cliproxy_autoprofile_error_total":               "Total number of auto-profile capture errors.",
-		"cliproxy_autoprofile_enabled":                   "Auto-profile feature flag (1=enabled, 0=disabled).",
+		"cliproxy_models_cache_hit_total":                       "Total number of /v1/models cache hits.",
+		"cliproxy_models_cache_miss_total":                      "Total number of /v1/models cache misses.",
+		"cliproxy_models_cache_build_total":                     "Total number of /v1/models payload builds.",
+		"cliproxy_models_cache_invalidate_total":                "Total number of /v1/models cache invalidations.",
+		"cliproxy_server_full_update_total":                     "Total number of full server config updates.",
+		"cliproxy_server_incremental_update_total":              "Total number of incremental auth snapshot updates.",
+		"cliproxy_models_cache_version_current":                 "Current cache version for /v1/models.",
+		"cliproxy_models_cache_entries_current":                 "Current /v1/models cache entries in memory.",
+		"cliproxy_process_goroutines_current":                   "Current number of goroutines in process.",
+		"cliproxy_process_open_fds_current":                     "Current open file descriptors (best-effort).",
+		"cliproxy_models_cache_strategy_ttl_legacy":             "Current /v1/models cache strategy flag (1=ttl_legacy, 0=versioned).",
+		"cliproxy_models_cache_requests_total":                  "Total number of /v1/models cache lookup requests.",
+		"cliproxy_models_cache_hit_ratio":                       "Current /v1/models cache hit ratio.",
+		"cliproxy_watcher_config_reload_requested_total":        "Total number of watcher config reload requests.",
+		"cliproxy_watcher_config_reload_executed_total":         "Total number of watcher config reload executions.",
+		"cliproxy_watcher_config_reload_coalesced_total":        "Total number of watcher config reload coalesced events.",
+		"cliproxy_watcher_auth_reload_requested_total":          "Total number of watcher auth reload requests.",
+		"cliproxy_watcher_auth_reload_executed_total":           "Total number of watcher auth reload executions.",
+		"cliproxy_watcher_auth_reload_coalesced_total":          "Total number of watcher auth reload coalesced events.",
+		"cliproxy_reload_requested_total":                       "Total number of service reload callback requests.",
+		"cliproxy_reload_executed_total":                        "Total number of service reload callback executions.",
+		"cliproxy_reload_dropped_stale_total":                   "Total number of stale service reload callbacks dropped.",
+		"cliproxy_provider_backpressure_reject_total":           "Total number of provider requests rejected due to inflight backpressure.",
+		"cliproxy_provider_circuit_open_total":                  "Total number of provider requests rejected while circuit breaker was open.",
+		"cliproxy_provider_adaptive_increase_total":             "Total number of adaptive provider inflight limit increases.",
+		"cliproxy_provider_adaptive_decrease_total":             "Total number of adaptive provider inflight limit decreases.",
+		"cliproxy_provider_adaptive_limit_sum":                  "Current sum of adaptive inflight limits across providers.",
+		"cliproxy_provider_adaptive_provider_count":             "Current number of providers tracked by adaptive inflight limiter.",
+		"cliproxy_provider_adaptive_enabled":                    "Adaptive provider inflight limiter feature flag (1=enabled, 0=disabled).",
+		"cliproxy_provider_adaptive_rollback_total":             "Total number of adaptive limiter rollbacks triggered by SLO guardrails.",
+		"cliproxy_provider_adaptive_rollback_active":            "Current number of providers under adaptive rollback hold window.",
+		"cliproxy_conductor_select_total":                       "Total number of conductor auth selection attempts.",
+		"cliproxy_conductor_select_ns_sum":                      "Total nanoseconds spent selecting auth candidates in conductor.",
+		"cliproxy_conductor_permit_total":                       "Total number of conductor provider permit acquisition attempts.",
+		"cliproxy_conductor_permit_ns_sum":                      "Total nanoseconds spent acquiring provider permits in conductor.",
+		"cliproxy_conductor_retry_total":                        "Total number of conductor retry loops triggered after execution failures.",
+		"cliproxy_conductor_retry_wait_ns_sum":                  "Total nanoseconds of retry cooldown waits scheduled by conductor.",
+		"cliproxy_codex_strategy_legacy_stream_total":           "Total Codex non-stream requests executed via legacy SSE-over-HTTP path.",
+		"cliproxy_codex_strategy_compact_auto_total":            "Total Codex non-stream requests attempted via compact_auto path.",
+		"cliproxy_codex_strategy_compact_force_total":           "Total Codex requests forced through /responses/compact.",
+		"cliproxy_codex_strategy_websocket_total":               "Total Codex requests executed via websocket transport.",
+		"cliproxy_codex_strategy_compact_auto_fallback_total":   "Total Codex compact_auto fallbacks back to legacy path.",
+		"cliproxy_codex_strategy_websocket_fallback_total":      "Total Codex websocket fallbacks back to HTTP path.",
+		"cliproxy_codex_http_nonstream_completed_total":         "Total Codex HTTP non-stream requests completed after first response.completed event.",
+		"cliproxy_codex_http_nonstream_missing_completed_total": "Total Codex HTTP non-stream requests that ended before response.completed.",
+		"cliproxy_codex_http_nonstream_event_error_total":       "Total Codex HTTP non-stream event-level error payloads observed before completion.",
+		"cliproxy_codex_http_nonstream_bytes_total":             "Total bytes processed by the incremental Codex HTTP non-stream parser.",
+		"cliproxy_autoprofile_capture_total":                    "Total number of runtime auto-profile captures.",
+		"cliproxy_autoprofile_cooldown_skip_total":              "Total number of auto-profile triggers skipped due to cooldown.",
+		"cliproxy_autoprofile_error_total":                      "Total number of auto-profile capture errors.",
+		"cliproxy_autoprofile_enabled":                          "Auto-profile feature flag (1=enabled, 0=disabled).",
 	}
 
 	hit := baseCounters["cliproxy_models_cache_hit_total"]
@@ -1588,8 +1619,8 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 		}
 	}
 
-	if oldCfg == nil || oldCfg.UsageStatisticsEnabled != cfg.UsageStatisticsEnabled {
-		usage.SetStatisticsEnabled(cfg.UsageStatisticsEnabled)
+	if oldCfg == nil || oldCfg.UsageStatisticsEnabled != cfg.UsageStatisticsEnabled || oldCfg.UsageJournalRetentionDays != cfg.UsageJournalRetentionDays || oldCfg.UsageJournalReplayMaxDays != cfg.UsageJournalReplayMaxDays {
+		usage.ConfigureUsageRuntime(cfg.UsageStatisticsEnabled, cfg.UsageJournalRetentionDays, cfg.UsageJournalReplayMaxDays)
 	}
 
 	if s.requestLogger != nil && (oldCfg == nil || oldCfg.ErrorLogsMaxFiles != cfg.ErrorLogsMaxFiles) {

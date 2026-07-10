@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -376,6 +377,156 @@ func TestSanitiseAggregatedSnapshot_PrunesOldRollingBuckets(t *testing.T) {
 	}
 	if _, ok := sanitised.RollingState.MinuteBuckets[now.Format(time.RFC3339)]; !ok {
 		t.Fatalf("expected recent rolling bucket to remain")
+	}
+}
+
+func TestFlushUsageStatsNow_WritesUsageJournal(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	resetUsageHMACKeyForTest()
+	ApplyUsageJournalConfig(true, 180, 8)
+	stats := NewRequestStatistics()
+	ts := time.Date(2026, 3, 7, 12, 34, 0, 0, time.UTC)
+	stats.Record(context.Background(), coreusage.Record{
+		Provider:    "claude",
+		Model:       "claude-3-5-sonnet",
+		APIKey:      "sk-test-journal",
+		RequestedAt: ts,
+		Detail:      coreusage.Detail{InputTokens: 10, OutputTokens: 20, TotalTokens: 30},
+	})
+	if err := FlushUsageStatsNow(stats); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	journalPath := filepath.Join(tmp, cliproxyDirName, usageJournalDirName, "2026-03-07.jsonl")
+	data, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatalf("read journal: %v", err)
+	}
+	if !bytes.Contains(data, []byte("2026-03-07T12:34:00Z")) {
+		t.Fatalf("expected minute-level journal entry, got %s", string(data))
+	}
+}
+
+func TestFlushUsageStatsNow_AppendOnlyDoesNotDuplicateMinutes(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	resetUsageHMACKeyForTest()
+	ApplyUsageJournalConfig(true, 180, 8)
+	stats := NewRequestStatistics()
+	ts := time.Date(2026, 3, 7, 12, 34, 0, 0, time.UTC)
+	stats.Record(context.Background(), coreusage.Record{
+		Provider:    "claude",
+		Model:       "claude-3-5-sonnet",
+		APIKey:      "sk-test-journal-append",
+		RequestedAt: ts,
+		Detail:      coreusage.Detail{InputTokens: 10, OutputTokens: 20, TotalTokens: 30},
+	})
+	if err := FlushUsageStatsNow(stats); err != nil {
+		t.Fatalf("first flush: %v", err)
+	}
+	if err := FlushUsageStatsNow(stats); err != nil {
+		t.Fatalf("second flush: %v", err)
+	}
+	journalPath := filepath.Join(tmp, cliproxyDirName, usageJournalDirName, "2026-03-07.jsonl")
+	data, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatalf("read journal: %v", err)
+	}
+	if got := strings.Count(string(data), "2026-03-07T12:34:00Z"); got != 1 {
+		t.Fatalf("expected single journal minute after repeated flushes, got %d\n%s", got, string(data))
+	}
+}
+
+func TestLoadIntoStore_ReplaysJournalIntoRollingOnly(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	resetUsageHMACKeyForTest()
+	ApplyUsageJournalConfig(true, 180, 8)
+	now := time.Now().UTC().Truncate(time.Minute)
+	journalNow := now.Add(time.Minute)
+	start := now.Add(-(7 * 24) * time.Hour)
+	minuteBuckets := make(map[string]RollingMinuteBucket)
+	for ts := start; !ts.After(now); ts = ts.Add(time.Minute) {
+		minuteBuckets[ts.Format(time.RFC3339)] = RollingMinuteBucket{Requests: 1, SuccessCount: 1, TotalTokens: 10}
+	}
+	seed := AggregatedStatisticsSnapshot{
+		TotalRequests: 5,
+		SuccessCount:  5,
+		TotalTokens:   50,
+		RequestsByDay: map[string]int64{"2026-03-01": 5},
+		TokensByDay:   map[string]int64{"2026-03-01": 50},
+	}
+	journalSnapshot := AggregatedStatisticsSnapshot{RollingState: RollingStateSnapshot{CoverageStart: start, CoverageEnd: now, MinuteBuckets: minuteBuckets}}
+	if err := writeUsageJournal(journalSnapshot, journalNow); err != nil {
+		t.Fatalf("write journal: %v", err)
+	}
+	payload := persistedUsageStats{Version: usagePersistenceVersion, ExportedAt: now, Usage: seed}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	statsPath, err := usageStatsPath()
+	if err != nil {
+		t.Fatalf("usageStatsPath: %v", err)
+	}
+	if err := writeAtomicFile(statsPath, data, 0o600); err != nil {
+		t.Fatalf("write canonical snapshot: %v", err)
+	}
+	loaded := NewRequestStatistics()
+	loader := &UsagePersister{stats: loaded}
+	if err := loader.loadIntoStore(); err != nil {
+		t.Fatalf("loadIntoStore: %v", err)
+	}
+	snapshot := loaded.Snapshot()
+	if snapshot.TotalRequests != 5 || snapshot.TotalTokens != 50 {
+		t.Fatalf("expected long aggregates from snapshot only, got %+v", snapshot)
+	}
+	if !snapshot.Rolling.Windows.Window24H.Available || snapshot.Rolling.Windows.Window24H.Requests != 24*60 {
+		t.Fatalf("expected rolling window rebuilt from journal, got %+v", snapshot.Rolling.Windows.Window24H)
+	}
+	if snapshot.RequestsByDay["2026-03-01"] != 5 || snapshot.TotalRequests != 5 {
+		t.Fatalf("expected no long-aggregate double count after replay, got %+v", snapshot)
+	}
+	if !snapshot.Rolling.Windows.Window7D.Available || snapshot.Rolling.Windows.Window7D.Requests != 7*24*60 {
+		t.Fatalf("expected 7d rolling rebuilt from journal, got %+v", snapshot.Rolling.Windows.Window7D)
+	}
+}
+
+func TestLoadIntoStore_IgnoresTrailingCorruptJournalLine(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	resetUsageHMACKeyForTest()
+	ApplyUsageJournalConfig(true, 180, 8)
+	now := time.Now().UTC().Truncate(time.Minute)
+	minute := now.Add(-2 * time.Minute)
+	journalPath := filepath.Join(tmp, cliproxyDirName, usageJournalDirName, minute.Format("2006-01-02")+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(journalPath), 0o700); err != nil {
+		t.Fatalf("mkdir journal: %v", err)
+	}
+	validLine := `{"minute":"` + minute.Format(time.RFC3339) + `","requests":1,"success_count":1,"failure_count":0,"total_tokens":10}` + "\n"
+	if err := os.WriteFile(journalPath, []byte(validLine+`{"minute":"broken`), 0o600); err != nil {
+		t.Fatalf("write journal: %v", err)
+	}
+	payload := persistedUsageStats{Version: usagePersistenceVersion, ExportedAt: now, Usage: AggregatedStatisticsSnapshot{}}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	statsPath, err := usageStatsPath()
+	if err != nil {
+		t.Fatalf("usageStatsPath: %v", err)
+	}
+	if err := writeAtomicFile(statsPath, data, 0o600); err != nil {
+		t.Fatalf("write canonical snapshot: %v", err)
+	}
+	loaded := NewRequestStatistics()
+	loader := &UsagePersister{stats: loaded}
+	if err := loader.loadIntoStore(); err != nil {
+		t.Fatalf("loadIntoStore should ignore trailing corrupt line: %v", err)
+	}
+	snapshot := loaded.Snapshot()
+	if snapshot.Rolling.CoverageStart == nil || !snapshot.Rolling.CoverageStart.Equal(minute) {
+		t.Fatalf("expected valid journal minute to survive replay, got %+v", snapshot.Rolling)
 	}
 }
 

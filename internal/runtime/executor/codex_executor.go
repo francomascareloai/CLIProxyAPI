@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -79,69 +80,47 @@ func (e *CodexExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth
 
 func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	if opts.Alt == "responses/compact" {
+		noteCodexStrategyCompactForce()
 		return e.executeCompact(ctx, auth, req, opts)
 	}
-	baseModel := thinking.ParseSuffix(req.Model).ModelName
-
-	apiKey, baseURL := codexCreds(auth)
-	if baseURL == "" {
-		baseURL = "https://chatgpt.com/backend-api/codex"
+	strategy := e.nonStreamStrategy(auth)
+	if strategy == codexNonStreamStrategyCompactForce {
+		noteCodexStrategyCompactForce()
+		return e.executeCompact(ctx, auth, req, opts)
 	}
-
+	if strategy == codexNonStreamStrategyCompactAuto && e.compactAutoEligible(opts) {
+		noteCodexStrategyCompactAuto()
+		respCompact, errCompact := e.executeCompact(ctx, auth, req, opts)
+		if errCompact == nil {
+			return respCompact, nil
+		}
+		if !isCodexCompactFallbackErr(errCompact) {
+			return respCompact, errCompact
+		}
+		noteCodexCompactAutoFallback()
+	}
+	noteCodexStrategyLegacyStream()
+	prepareStartedAt := time.Now()
+	prepared, err := e.prepareCodexRequest(auth, req, opts, sdktranslator.FromString("codex"), true)
+	if err != nil {
+		return resp, err
+	}
+	observeCodexHTTPNonStreamPrepare(time.Since(prepareStartedAt))
+	baseModel := prepared.baseModel
 	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, auth)
 	defer reporter.trackFailure(ctx, &err)
 
-	from := opts.SourceFormat
-	to := sdktranslator.FromString("codex")
-	originalPayloadSource := req.Payload
-	if len(opts.OriginalRequest) > 0 {
-		originalPayloadSource = opts.OriginalRequest
-	}
-	originalPayload := originalPayloadSource
-	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, false)
-	body := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, false)
-
-	body, err = thinking.ApplyThinking(body, req.Model, from.String(), to.String(), e.Identifier())
+	url := buildCodexResponsesURL(prepared.baseURL, false)
+	httpReq, err := e.cacheHelper(ctx, prepared.from, url, req, prepared.body)
 	if err != nil {
 		return resp, err
 	}
-
-	requestedModel := payloadRequestedModel(opts, req.Model)
-	body = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, originalTranslated, requestedModel)
-	body, _ = sjson.SetBytes(body, "model", baseModel)
-	body, _ = sjson.SetBytes(body, "stream", true)
-	body, _ = sjson.DeleteBytes(body, "previous_response_id")
-	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
-	body, _ = sjson.DeleteBytes(body, "safety_identifier")
-	if !gjson.GetBytes(body, "instructions").Exists() {
-		body, _ = sjson.SetBytes(body, "instructions", "")
-	}
-
-	url := strings.TrimSuffix(baseURL, "/") + "/responses"
-	httpReq, err := e.cacheHelper(ctx, from, url, req, body)
-	if err != nil {
-		return resp, err
-	}
-	applyCodexHeaders(httpReq, auth, apiKey, true)
-	var authID, authLabel, authType, authValue string
-	if auth != nil {
-		authID = auth.ID
-		authLabel = auth.Label
-		authType, authValue = auth.AccountInfo()
-	}
-	recordAPIRequest(ctx, e.cfg, upstreamRequestLog{
-		URL:       url,
-		Method:    http.MethodPost,
-		Headers:   httpReq.Header.Clone(),
-		Body:      body,
-		Provider:  e.Identifier(),
-		AuthID:    authID,
-		AuthLabel: authLabel,
-		AuthType:  authType,
-		AuthValue: authValue,
-	})
+	applyCodexHeaders(httpReq, auth, prepared.apiKey, true)
+	recordCodexUpstreamRequest(ctx, e.cfg, url, http.MethodPost, httpReq.Header.Clone(), prepared.body, prepared.authID, prepared.authLabel, prepared.authType, prepared.authValue)
 	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+	httpStartedAt := time.Now()
 	httpResp, err := httpClient.Do(httpReq)
+	observeCodexHTTPNonStreamTTFB(time.Since(httpStartedAt))
 	if err != nil {
 		recordAPIResponseError(ctx, e.cfg, err)
 		return resp, err
@@ -159,93 +138,54 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		err = newCodexStatusErr(httpResp.StatusCode, b)
 		return resp, err
 	}
-	data, err := io.ReadAll(httpResp.Body)
+
+	completionStartedAt := time.Now()
+	completedPayload, err := readCodexCompletionEvent(ctx, e.cfg, httpResp.Body)
+	observeCodexHTTPNonStreamCompletionWait(time.Since(completionStartedAt))
 	if err != nil {
+		if errors.Is(err, io.EOF) {
+			noteCodexHTTPNonStreamMissingCompleted()
+			err = statusErr{code: 408, msg: "stream error: stream disconnected before completion: stream closed before response.completed"}
+			return resp, err
+		}
 		recordAPIResponseError(ctx, e.cfg, err)
 		return resp, err
 	}
-	appendAPIResponseChunk(ctx, e.cfg, data)
 
-	lines := bytes.Split(data, []byte("\n"))
-	for _, line := range lines {
-		if !bytes.HasPrefix(line, dataTag) {
-			continue
-		}
-
-		line = bytes.TrimSpace(line[5:])
-		if gjson.GetBytes(line, "type").String() != "response.completed" {
-			continue
-		}
-
-		if detail, ok := parseCodexUsage(line); ok {
-			reporter.publish(ctx, detail)
-		}
-
-		var param any
-		out := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, originalPayload, body, line, &param)
-		resp = cliproxyexecutor.Response{Payload: []byte(out), Headers: httpResp.Header.Clone()}
-		return resp, nil
+	noteCodexHTTPNonStreamCompleted()
+	if detail, ok := parseCodexUsage(completedPayload); ok {
+		reporter.publish(ctx, detail)
 	}
-	err = statusErr{code: 408, msg: "stream error: stream disconnected before completion: stream closed before response.completed"}
-	return resp, err
+	translateStartedAt := time.Now()
+	var param any
+	out := sdktranslator.TranslateNonStream(ctx, prepared.to, prepared.from, req.Model, prepared.originalPayload, prepared.body, completedPayload, &param)
+	observeCodexHTTPNonStreamTail(time.Since(translateStartedAt))
+	resp = cliproxyexecutor.Response{Payload: []byte(out), Headers: httpResp.Header.Clone()}
+	return resp, nil
 }
 
 func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
-	baseModel := thinking.ParseSuffix(req.Model).ModelName
-
-	apiKey, baseURL := codexCreds(auth)
-	if baseURL == "" {
-		baseURL = "https://chatgpt.com/backend-api/codex"
+	prepareStartedAt := time.Now()
+	prepared, err := e.prepareCodexRequest(auth, req, opts, sdktranslator.FromString("openai-response"), false)
+	if err != nil {
+		return resp, err
 	}
-
+	observeCodexHTTPCompactPrepare(time.Since(prepareStartedAt))
+	baseModel := prepared.baseModel
 	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, auth)
 	defer reporter.trackFailure(ctx, &err)
 
-	from := opts.SourceFormat
-	to := sdktranslator.FromString("openai-response")
-	originalPayloadSource := req.Payload
-	if len(opts.OriginalRequest) > 0 {
-		originalPayloadSource = opts.OriginalRequest
-	}
-	originalPayload := originalPayloadSource
-	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, false)
-	body := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, false)
-
-	body, err = thinking.ApplyThinking(body, req.Model, from.String(), to.String(), e.Identifier())
+	url := buildCodexResponsesURL(prepared.baseURL, true)
+	httpReq, err := e.cacheHelper(ctx, prepared.from, url, req, prepared.body)
 	if err != nil {
 		return resp, err
 	}
-
-	requestedModel := payloadRequestedModel(opts, req.Model)
-	body = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, originalTranslated, requestedModel)
-	body, _ = sjson.SetBytes(body, "model", baseModel)
-	body, _ = sjson.DeleteBytes(body, "stream")
-
-	url := strings.TrimSuffix(baseURL, "/") + "/responses/compact"
-	httpReq, err := e.cacheHelper(ctx, from, url, req, body)
-	if err != nil {
-		return resp, err
-	}
-	applyCodexHeaders(httpReq, auth, apiKey, false)
-	var authID, authLabel, authType, authValue string
-	if auth != nil {
-		authID = auth.ID
-		authLabel = auth.Label
-		authType, authValue = auth.AccountInfo()
-	}
-	recordAPIRequest(ctx, e.cfg, upstreamRequestLog{
-		URL:       url,
-		Method:    http.MethodPost,
-		Headers:   httpReq.Header.Clone(),
-		Body:      body,
-		Provider:  e.Identifier(),
-		AuthID:    authID,
-		AuthLabel: authLabel,
-		AuthType:  authType,
-		AuthValue: authValue,
-	})
+	applyCodexHeaders(httpReq, auth, prepared.apiKey, false)
+	recordCodexUpstreamRequest(ctx, e.cfg, url, http.MethodPost, httpReq.Header.Clone(), prepared.body, prepared.authID, prepared.authLabel, prepared.authType, prepared.authValue)
 	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+	httpStartedAt := time.Now()
 	httpResp, err := httpClient.Do(httpReq)
+	observeCodexHTTPCompactTTFB(time.Since(httpStartedAt))
 	if err != nil {
 		recordAPIResponseError(ctx, e.cfg, err)
 		return resp, err
@@ -271,10 +211,94 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	appendAPIResponseChunk(ctx, e.cfg, data)
 	reporter.publish(ctx, parseOpenAIUsage(data))
 	reporter.ensurePublished(ctx)
+	translateStartedAt := time.Now()
 	var param any
-	out := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, originalPayload, body, data, &param)
+	out := sdktranslator.TranslateNonStream(ctx, prepared.to, prepared.from, req.Model, prepared.originalPayload, prepared.body, data, &param)
+	observeCodexHTTPCompactTail(time.Since(translateStartedAt))
 	resp = cliproxyexecutor.Response{Payload: []byte(out), Headers: httpResp.Header.Clone()}
 	return resp, nil
+}
+
+const (
+	codexNonStreamStrategyLegacyStream = "legacy_stream"
+	codexNonStreamStrategyCompactAuto  = "compact_auto"
+	codexNonStreamStrategyCompactForce = "compact_force"
+	codexNonStreamStrategyWebsocket    = "websocket"
+)
+
+func normalizeCodexNonStreamStrategy(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case codexNonStreamStrategyCompactAuto, codexNonStreamStrategyCompactForce, codexNonStreamStrategyWebsocket:
+		return strings.ToLower(strings.TrimSpace(raw))
+	default:
+		return ""
+	}
+}
+
+func (e *CodexExecutor) nonStreamStrategy(auth *cliproxyauth.Auth) string {
+	if auth != nil && auth.Attributes != nil {
+		if strategy := normalizeCodexNonStreamStrategy(auth.Attributes["non_stream_strategy"]); strategy != "" {
+			return strategy
+		}
+	}
+	if cfgEntry := e.resolveCodexConfig(auth); cfgEntry != nil {
+		if strategy := normalizeCodexNonStreamStrategy(cfgEntry.NonStreamStrategy); strategy != "" {
+			return strategy
+		}
+	}
+	return codexNonStreamStrategyLegacyStream
+}
+
+func (e *CodexExecutor) compactAutoEligible(opts cliproxyexecutor.Options) bool {
+	return opts.SourceFormat == sdktranslator.FromString("openai-response")
+}
+
+func isCodexCompactFallbackErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	statusProvider, ok := err.(interface{ StatusCode() int })
+	if !ok || statusProvider == nil {
+		return false
+	}
+	switch statusProvider.StatusCode() {
+	case http.StatusNotFound, http.StatusBadRequest, http.StatusMethodNotAllowed, http.StatusNotImplemented, http.StatusUnsupportedMediaType, http.StatusUpgradeRequired:
+		return true
+	default:
+		return false
+	}
+}
+
+func readCodexCompletionEvent(ctx context.Context, cfg *config.Config, body io.Reader) ([]byte, error) {
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(nil, 52_428_800)
+	for scanner.Scan() {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		appendAPIResponseChunk(ctx, cfg, line)
+		addCodexHTTPNonStreamBytes(len(line))
+		if !bytes.HasPrefix(line, dataTag) {
+			continue
+		}
+		payload := bytes.TrimSpace(line[len(dataTag):])
+		if len(payload) == 0 {
+			continue
+		}
+		if wsErr, ok := parseCodexWebsocketError(payload); ok {
+			noteCodexHTTPNonStreamEventError()
+			return nil, wsErr
+		}
+		if gjson.GetBytes(payload, "type").String() != "response.completed" {
+			continue
+		}
+		return payload, nil
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return nil, io.EOF
 }
 
 func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
@@ -311,6 +335,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	body, _ = sjson.DeleteBytes(body, "previous_response_id")
 	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
 	body, _ = sjson.DeleteBytes(body, "safety_identifier")
+	body = normalizeCodexServiceTier(body)
 	body, _ = sjson.SetBytes(body, "model", baseModel)
 	if !gjson.GetBytes(body, "instructions").Exists() {
 		body, _ = sjson.SetBytes(body, "instructions", "")
@@ -634,6 +659,20 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 		httpReq.Header.Set("Session_id", cache.ID)
 	}
 	return httpReq, nil
+}
+
+func normalizeCodexServiceTier(rawJSON []byte) []byte {
+	if v := gjson.GetBytes(rawJSON, "service_tier"); v.Exists() {
+		switch v.String() {
+		case "fast":
+			rawJSON, _ = sjson.SetBytes(rawJSON, "service_tier", "priority")
+		case "flex", "priority":
+			// Preserve the tiers we explicitly support for Codex upstream.
+		default:
+			rawJSON, _ = sjson.DeleteBytes(rawJSON, "service_tier")
+		}
+	}
+	return rawJSON
 }
 
 func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, stream bool) {

@@ -439,6 +439,8 @@ func (s *Service) ensureExecutorsForAuthWithMode(a *coreauth.Auth, forceReplace 
 	case "iflow":
 		s.coreManager.RegisterExecutor(executor.NewIFlowExecutor(s.cfg))
 	case "kimi":
+	case "minimax":
+		s.coreManager.RegisterExecutor(executor.NewMiniMaxExecutor(s.cfg))
 		s.coreManager.RegisterExecutor(executor.NewKimiExecutor(s.cfg))
 	default:
 		providerKey := strings.ToLower(strings.TrimSpace(a.Provider))
@@ -763,6 +765,9 @@ func (s *Service) Run(ctx context.Context) error {
 				for key, value := range s.coreManager.ResilienceMetricsSnapshot() {
 					out[key] = value
 				}
+			}
+			for key, value := range executor.CodexRuntimeMetricsSnapshot() {
+				out[key] = value
 			}
 			if s.watcher == nil {
 				out["cliproxy_reload_requested_total"] = s.reloadRequested.Load()

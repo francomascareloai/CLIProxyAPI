@@ -212,6 +212,14 @@ type Manager struct {
 	providerAdaptiveDecCount  atomic.Uint64
 	providerAdaptiveRollback  atomic.Uint64
 
+	// conductor counters for hot-path stage observability.
+	conductorSelectCount   atomic.Uint64
+	conductorPermitCount   atomic.Uint64
+	conductorRetryCount    atomic.Uint64
+	conductorSelectLatency atomic.Uint64
+	conductorPermitLatency atomic.Uint64
+	conductorRetryWaitNS   atomic.Uint64
+
 	// Auto refresh state
 	refreshCancel    context.CancelFunc
 	refreshSemaphore chan struct{}
@@ -995,6 +1003,8 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 		if !shouldRetry {
 			break
 		}
+		m.conductorRetryCount.Add(1)
+		m.conductorRetryWaitNS.Add(uint64(wait.Nanoseconds()))
 		if errWait := waitForCooldown(ctx, wait); errWait != nil {
 			return cliproxyexecutor.Response{}, errWait
 		}
@@ -1026,6 +1036,8 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 		if !shouldRetry {
 			break
 		}
+		m.conductorRetryCount.Add(1)
+		m.conductorRetryWaitNS.Add(uint64(wait.Nanoseconds()))
 		if errWait := waitForCooldown(ctx, wait); errWait != nil {
 			return cliproxyexecutor.Response{}, errWait
 		}
@@ -1057,6 +1069,8 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 		if !shouldRetry {
 			break
 		}
+		m.conductorRetryCount.Add(1)
+		m.conductorRetryWaitNS.Add(uint64(wait.Nanoseconds()))
 		if errWait := waitForCooldown(ctx, wait); errWait != nil {
 			return nil, errWait
 		}
@@ -1082,7 +1096,10 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			}
 			return cliproxyexecutor.Response{}, &Error{Code: "auth_not_found", Message: "no auth available"}
 		}
+		selectStartedAt := time.Now()
 		auth, executor, provider, errPick := m.pickNextMixed(ctx, providers, routeModel, opts, tried)
+		m.conductorSelectCount.Add(1)
+		m.conductorSelectLatency.Add(uint64(time.Since(selectStartedAt).Nanoseconds()))
 		if errPick != nil {
 			if lastErr != nil {
 				return cliproxyexecutor.Response{}, lastErr
@@ -1095,7 +1112,10 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		publishSelectedAuthMetadata(opts.Metadata, auth.ID)
 
 		tried[auth.ID] = struct{}{}
+		permitStartedAt := time.Now()
 		releaseProviderPermit, errPermit := m.acquireProviderPermit(provider)
+		m.conductorPermitCount.Add(1)
+		m.conductorPermitLatency.Add(uint64(time.Since(permitStartedAt).Nanoseconds()))
 		if errPermit != nil {
 			lastErr = errPermit
 			continue
@@ -1166,7 +1186,10 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			}
 			return cliproxyexecutor.Response{}, &Error{Code: "auth_not_found", Message: "no auth available"}
 		}
+		selectStartedAt := time.Now()
 		auth, executor, provider, errPick := m.pickNextMixed(ctx, providers, routeModel, opts, tried)
+		m.conductorSelectCount.Add(1)
+		m.conductorSelectLatency.Add(uint64(time.Since(selectStartedAt).Nanoseconds()))
 		if errPick != nil {
 			if lastErr != nil {
 				return cliproxyexecutor.Response{}, lastErr
@@ -1179,7 +1202,10 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		publishSelectedAuthMetadata(opts.Metadata, auth.ID)
 
 		tried[auth.ID] = struct{}{}
+		permitStartedAt := time.Now()
 		releaseProviderPermit, errPermit := m.acquireProviderPermit(provider)
+		m.conductorPermitCount.Add(1)
+		m.conductorPermitLatency.Add(uint64(time.Since(permitStartedAt).Nanoseconds()))
 		if errPermit != nil {
 			lastErr = errPermit
 			continue
@@ -1250,7 +1276,10 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			}
 			return nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 		}
+		selectStartedAt := time.Now()
 		auth, executor, provider, errPick := m.pickNextMixed(ctx, providers, routeModel, opts, tried)
+		m.conductorSelectCount.Add(1)
+		m.conductorSelectLatency.Add(uint64(time.Since(selectStartedAt).Nanoseconds()))
 		if errPick != nil {
 			if lastErr != nil {
 				return nil, lastErr
@@ -1263,7 +1292,10 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		publishSelectedAuthMetadata(opts.Metadata, auth.ID)
 
 		tried[auth.ID] = struct{}{}
+		permitStartedAt := time.Now()
 		releaseProviderPermit, errPermit := m.acquireProviderPermit(provider)
+		m.conductorPermitCount.Add(1)
+		m.conductorPermitLatency.Add(uint64(time.Since(permitStartedAt).Nanoseconds()))
 		if errPermit != nil {
 			lastErr = errPermit
 			continue
@@ -2028,10 +2060,23 @@ func (m *Manager) recordProviderResult(provider string, err error, latency time.
 		} else if !isRequestInvalidError(err) {
 			status := statusCodeFromError(err)
 			if status != http.StatusBadRequest {
-				state.consecutiveFailures++
-				if state.consecutiveFailures >= settings.failureThreshold {
-					state.openUntil = now.Add(settings.openStateDuration)
-					state.halfOpenRemaining = 0
+				// Half-open state = circuit was open but cooldown (openUntil) has expired.
+				// In half-open we must honor halfOpenMaxRequests probe attempts before
+				// re-tripping: previously a single half-open failure re-opened the circuit
+				// immediately (because consecutiveFailures was already >= threshold), which
+				// made halfOpenMaxRequests ineffective and left the circuit stuck re-opening
+				// on every probe for providers that fail consistently (e.g. Openference 403).
+				inHalfOpen := !state.openUntil.IsZero() && !state.openUntil.After(now)
+				if inHalfOpen && state.halfOpenRemaining > 0 {
+					// Half-open probe failed but attempts remain: stay half-open and let the
+					// next probe through (halfOpenRemaining was already decremented at acquire).
+					// Only re-trip once all probes are exhausted.
+				} else {
+					state.consecutiveFailures++
+					if state.consecutiveFailures >= settings.failureThreshold {
+						state.openUntil = now.Add(settings.openStateDuration)
+						state.halfOpenRemaining = 0
+					}
 				}
 			}
 		}
@@ -2782,15 +2827,21 @@ func (m *Manager) ResilienceMetricsSnapshot() map[string]uint64 {
 		adaptiveEnabled = 1
 	}
 	return map[string]uint64{
-		"cliproxy_provider_backpressure_reject_total": m.providerBackpressureCount.Load(),
-		"cliproxy_provider_circuit_open_total":        m.providerCircuitOpenCount.Load(),
-		"cliproxy_provider_adaptive_increase_total":   m.providerAdaptiveIncCount.Load(),
-		"cliproxy_provider_adaptive_decrease_total":   m.providerAdaptiveDecCount.Load(),
-		"cliproxy_provider_adaptive_limit_sum":        adaptiveLimitSum,
-		"cliproxy_provider_adaptive_provider_count":   adaptiveProviders,
-		"cliproxy_provider_adaptive_enabled":          adaptiveEnabled,
-		"cliproxy_provider_adaptive_rollback_total":   m.providerAdaptiveRollback.Load(),
-		"cliproxy_provider_adaptive_rollback_active":  adaptiveRollbackActive,
+		"cliproxy_provider_backpressure_reject_total":   m.providerBackpressureCount.Load(),
+		"cliproxy_provider_circuit_open_total":          m.providerCircuitOpenCount.Load(),
+		"cliproxy_provider_adaptive_increase_total":     m.providerAdaptiveIncCount.Load(),
+		"cliproxy_provider_adaptive_decrease_total":     m.providerAdaptiveDecCount.Load(),
+		"cliproxy_provider_adaptive_limit_sum":          adaptiveLimitSum,
+		"cliproxy_provider_adaptive_provider_count":     adaptiveProviders,
+		"cliproxy_provider_adaptive_enabled":            adaptiveEnabled,
+		"cliproxy_provider_adaptive_rollback_total":     m.providerAdaptiveRollback.Load(),
+		"cliproxy_provider_adaptive_rollback_active":    adaptiveRollbackActive,
+		"cliproxy_conductor_select_total":               m.conductorSelectCount.Load(),
+		"cliproxy_conductor_select_ns_sum":              m.conductorSelectLatency.Load(),
+		"cliproxy_conductor_permit_total":               m.conductorPermitCount.Load(),
+		"cliproxy_conductor_permit_ns_sum":              m.conductorPermitLatency.Load(),
+		"cliproxy_conductor_retry_total":                m.conductorRetryCount.Load(),
+		"cliproxy_conductor_retry_wait_ns_sum":          m.conductorRetryWaitNS.Load(),
 	}
 }
 

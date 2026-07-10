@@ -2594,5 +2594,50 @@
       }
     },
     "gpt-oss-120b-medium": {}
-  }
+  },
+  "minimax": [
+    {
+      "id": "MiniMax-M3",
+      "object": "model",
+      "created": 1700000000,
+      "owned_by": "minimax",
+      "type": "minimax",
+      "thinking": {
+        "levels": [
+          "disabled",
+          "adaptive"
+        ],
+        "default": "adaptive"
+      }
+    },
+    {
+      "id": "MiniMax-M2.7",
+      "object": "model",
+      "created": 1700000000,
+      "owned_by": "minimax",
+      "type": "minimax",
+      "thinking": null
+    },
+    {
+      "id": "MiniMax-M2.7-highspeed",
+      "object": "model",
+      "created": 1700000000,
+      "owned_by": "minimax",
+      "type": "minimax"
+    },
+    {
+      "id": "MiniMax-M2.5",
+      "object": "model",
+      "created": 1700000000,
+      "owned_by": "minimax",
+      "type": "minimax"
+    },
+    {
+      "id": "MiniMax-M2.5-highspeed",
+      "object": "model",
+      "created": 1700000000,
+      "owned_by": "minimax",
+      "type": "minimax"
+    }
+  ]
 }

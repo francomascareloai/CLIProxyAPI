@@ -323,7 +323,7 @@ func TestBuildConfigChangeDetails_AllBranches(t *testing.T) {
 			{APIKey: "c-old", BaseURL: "http://c-old", ProxyURL: "http://cp-old", Headers: map[string]string{"H": "1"}, ExcludedModels: []string{"x"}},
 		},
 		CodexKey: []config.CodexKey{
-			{APIKey: "x-old", BaseURL: "http://x-old", ProxyURL: "http://xp-old", Headers: map[string]string{"H": "1"}, ExcludedModels: []string{"x"}},
+			{APIKey: "x-old", BaseURL: "http://x-old", ProxyURL: "http://xp-old", NonStreamStrategy: "legacy_stream", Headers: map[string]string{"H": "1"}, ExcludedModels: []string{"x"}},
 		},
 		VertexCompatAPIKey: []config.VertexCompatKey{
 			{APIKey: "v-old", BaseURL: "http://v-old", ProxyURL: "http://vp-old", Headers: map[string]string{"H": "1"}, Models: []config.VertexCompatModel{{Name: "m1"}}},
@@ -376,7 +376,7 @@ func TestBuildConfigChangeDetails_AllBranches(t *testing.T) {
 			{APIKey: "c-new", BaseURL: "http://c-new", ProxyURL: "http://cp-new", Headers: map[string]string{"H": "2"}, ExcludedModels: []string{"x", "y"}},
 		},
 		CodexKey: []config.CodexKey{
-			{APIKey: "x-new", BaseURL: "http://x-new", ProxyURL: "http://xp-new", Headers: map[string]string{"H": "2"}, ExcludedModels: []string{"x", "y"}},
+			{APIKey: "x-new", BaseURL: "http://x-new", ProxyURL: "http://xp-new", NonStreamStrategy: "compact_auto", Headers: map[string]string{"H": "2"}, ExcludedModels: []string{"x", "y"}},
 		},
 		VertexCompatAPIKey: []config.VertexCompatKey{
 			{APIKey: "v-new", BaseURL: "http://v-new", ProxyURL: "http://vp-new", Headers: map[string]string{"H": "2"}, Models: []config.VertexCompatModel{{Name: "m1"}, {Name: "m2"}}},
@@ -443,6 +443,7 @@ func TestBuildConfigChangeDetails_AllBranches(t *testing.T) {
 	expectContains(t, changes, "claude[0].excluded-models: updated (1 -> 2 entries)")
 	expectContains(t, changes, "codex[0].base-url: http://x-old -> http://x-new")
 	expectContains(t, changes, "codex[0].proxy-url: http://xp-old -> http://xp-new")
+	expectContains(t, changes, "codex[0].non-stream-strategy: legacy_stream -> compact_auto")
 	expectContains(t, changes, "codex[0].api-key: updated")
 	expectContains(t, changes, "codex[0].headers: updated")
 	expectContains(t, changes, "codex[0].excluded-models: updated (1 -> 2 entries)")

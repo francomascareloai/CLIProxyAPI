@@ -94,6 +94,10 @@ type Config struct {
 
 	// UsageStatisticsEnabled toggles in-memory usage aggregation; when false, usage data is discarded.
 	UsageStatisticsEnabled bool `yaml:"usage-statistics-enabled" json:"usage-statistics-enabled"`
+	// UsageJournalRetentionDays bounds on-disk minute-level journal retention.
+	UsageJournalRetentionDays int `yaml:"usage-journal-retention-days" json:"usage-journal-retention-days"`
+	// UsageJournalReplayMaxDays bounds startup replay/backfill from the minute-level journal.
+	UsageJournalReplayMaxDays int `yaml:"usage-journal-replay-max-days" json:"usage-journal-replay-max-days"`
 
 	// DisableCooling disables quota cooldown scheduling when true.
 	DisableCooling bool `yaml:"disable-cooling" json:"disable-cooling"`
@@ -161,6 +165,12 @@ type Config struct {
 
 	// Payload defines default and override rules for provider payload parameters.
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
+
+	// ClaudeOpenAIPriority forces Claude-originated requests routed through OpenAI-compatible
+	// upstreams to request OpenAI priority tier when the translated payload is otherwise
+	// silent (or only carries "auto"). This is intended as an operational toggle for
+	// Claude Code -> CLIProxy -> GPT-5.x setups.
+	ClaudeOpenAIPriority bool `yaml:"claude-openai-priority" json:"claude-openai-priority"`
 
 	legacyMigrationPending bool `yaml:"-" json:"-"`
 }
@@ -252,6 +262,9 @@ type RemoteManagement struct {
 	AllowRemote bool `yaml:"allow-remote"`
 	// SecretKey is the management key (plaintext or bcrypt hashed). YAML key intentionally 'secret-key'.
 	SecretKey string `yaml:"secret-key"`
+	// DisableAuth skips management key verification entirely (local + remote) when true.
+	// Only use on trusted/local networks; still respects allow-remote for non-localhost clients.
+	DisableAuth bool `yaml:"disable-auth"`
 	// DisableControlPanel skips serving and syncing the bundled management UI when true.
 	DisableControlPanel bool `yaml:"disable-control-panel"`
 	// PanelGitHubRepository overrides the GitHub repository used to fetch the management panel asset.
@@ -473,6 +486,10 @@ type CodexKey struct {
 	// Websockets enables the Responses API websocket transport for this credential.
 	Websockets bool `yaml:"websockets,omitempty" json:"websockets,omitempty"`
 
+	// NonStreamStrategy controls the non-stream Codex execution path.
+	// Supported values: "legacy_stream" (default), "compact_auto", "compact_force", "websocket".
+	NonStreamStrategy string `yaml:"non-stream-strategy,omitempty" json:"non-stream-strategy,omitempty"`
+
 	// ProxyURL overrides the global proxy setting for this API key if provided.
 	ProxyURL string `yaml:"proxy-url" json:"proxy-url"`
 
@@ -636,6 +653,8 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.LogsMaxTotalSizeMB = 0
 	cfg.ErrorLogsMaxFiles = 10
 	cfg.UsageStatisticsEnabled = false
+	cfg.UsageJournalRetentionDays = 180
+	cfg.UsageJournalReplayMaxDays = 8
 	cfg.DisableCooling = false
 	cfg.AuthReloadDebounceMS = 250
 	cfg.AuthReloadMaxCoalesceMS = 1000
@@ -950,6 +969,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// Validate raw payload rules and drop invalid entries.
 	cfg.SanitizePayloadRules()
+	cfg.SanitizeUsageJournalSettings()
 
 	// NOTE: Legacy migration persistence is intentionally disabled together with
 	// startup legacy migration to keep startup read-only for config.yaml.
@@ -1022,6 +1042,21 @@ func payloadRawString(value any) ([]byte, bool) {
 		return typed, true
 	default:
 		return nil, false
+	}
+}
+
+func (cfg *Config) SanitizeUsageJournalSettings() {
+	if cfg == nil {
+		return
+	}
+	if cfg.UsageJournalRetentionDays < 8 {
+		cfg.UsageJournalRetentionDays = 180
+	}
+	if cfg.UsageJournalReplayMaxDays < 8 {
+		cfg.UsageJournalReplayMaxDays = 8
+	}
+	if cfg.UsageJournalReplayMaxDays > cfg.UsageJournalRetentionDays {
+		cfg.UsageJournalReplayMaxDays = cfg.UsageJournalRetentionDays
 	}
 }
 
@@ -1628,6 +1663,10 @@ func isKnownDefaultValue(path []string, node *yaml.Node) bool {
 		switch fullPath {
 		case "error-logs-max-files":
 			return node.Value == "10"
+		case "usage-journal-retention-days":
+			return node.Value == "180"
+		case "usage-journal-replay-max-days":
+			return node.Value == "8"
 		}
 	}
 

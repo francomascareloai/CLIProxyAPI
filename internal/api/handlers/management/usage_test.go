@@ -14,6 +14,8 @@ import (
 
 func TestGetUsageStatistics_ExposesUsageAggregatesV2(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	usage.ConfigureUsageRuntime(true, 180, 8)
+	t.Cleanup(func() { usage.ConfigureUsageRuntime(false, 180, 8) })
 	stats := usage.NewRequestStatistics()
 	stats.Record(nil, coreusage.Record{
 		Provider:    "claude",
@@ -51,6 +53,17 @@ func TestGetUsageStatistics_ExposesUsageAggregatesV2(t *testing.T) {
 		Retention struct {
 			DetailsEphemeral          bool `json:"details_ephemeral"`
 			MaxRequestDetailsPerModel int  `json:"max_request_details_per_model"`
+			UsageJournal              struct {
+				Enabled             bool   `json:"enabled"`
+				AppendOnly          bool   `json:"append_only"`
+				RetentionDays       int    `json:"retention_days"`
+				ReplayMaxDays       int    `json:"replay_max_days"`
+				BackfillStatus      string `json:"backfill_status"`
+				LastReplaySource    string `json:"last_replay_source"`
+				CoverageStart       string `json:"coverage_start"`
+				CoverageEnd         string `json:"coverage_end"`
+				LastFinalizedMinute string `json:"last_finalized_minute"`
+			} `json:"usage_journal"`
 		} `json:"retention"`
 		Usage struct {
 			TotalRequests int `json:"total_requests"`
@@ -88,6 +101,15 @@ func TestGetUsageStatistics_ExposesUsageAggregatesV2(t *testing.T) {
 	if payload.Retention.MaxRequestDetailsPerModel != usage.MaxRequestDetailsPerModel() {
 		t.Fatalf("unexpected max_request_details_per_model: %d", payload.Retention.MaxRequestDetailsPerModel)
 	}
+	if !payload.Retention.UsageJournal.Enabled || payload.Retention.UsageJournal.RetentionDays <= 0 {
+		t.Fatalf("expected usage journal status in retention payload")
+	}
+	if !payload.Retention.UsageJournal.AppendOnly || payload.Retention.UsageJournal.ReplayMaxDays < 8 {
+		t.Fatalf("expected append-only replay telemetry in retention payload: %+v", payload.Retention.UsageJournal)
+	}
+	if payload.Retention.UsageJournal.BackfillStatus == "" || payload.Retention.UsageJournal.LastFinalizedMinute == "" {
+		t.Fatalf("expected backfill telemetry in retention payload: %+v", payload.Retention.UsageJournal)
+	}
 	if payload.Usage.TotalRequests != 1 {
 		t.Fatalf("unexpected total requests: %d", payload.Usage.TotalRequests)
 	}
@@ -110,6 +132,8 @@ func TestGetUsageStatistics_ExposesUsageAggregatesV2(t *testing.T) {
 
 func TestGetAccountStats_UsesDurableBreakdownsWithoutDetails(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	usage.ConfigureUsageRuntime(true, 180, 8)
+	t.Cleanup(func() { usage.ConfigureUsageRuntime(false, 180, 8) })
 	seed := usage.NewRequestStatistics()
 	seed.Record(nil, coreusage.Record{
 		Provider:    "claude",
@@ -125,7 +149,19 @@ func TestGetAccountStats_UsesDurableBreakdownsWithoutDetails(t *testing.T) {
 		},
 	})
 	stats := usage.NewRequestStatistics()
-	stats.ReplaceAggregatedSnapshot(seed.SnapshotAggregated())
+	stats.Record(nil, coreusage.Record{
+		Provider:    "claude",
+		Model:       "claude-3-5-sonnet",
+		APIKey:      "sk-test-durable",
+		Source:      "durable@example.com",
+		AuthIndex:   "auth-durable",
+		RequestedAt: time.Date(2026, 3, 6, 13, 0, 0, 0, time.UTC),
+		Detail: coreusage.Detail{
+			InputTokens:  20,
+			OutputTokens: 22,
+			TotalTokens:  42,
+		},
+	})
 
 	h := &Handler{usageStats: stats}
 	w := httptest.NewRecorder()
@@ -154,6 +190,8 @@ func TestGetAccountStats_UsesDurableBreakdownsWithoutDetails(t *testing.T) {
 
 func TestGetUsageStatistics_ExposesHourAndDayAggregates(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	usage.ConfigureUsageRuntime(true, 180, 8)
+	t.Cleanup(func() { usage.ConfigureUsageRuntime(false, 180, 8) })
 	stats := usage.NewRequestStatistics()
 	stats.Record(nil, coreusage.Record{
 		Provider:    "claude",

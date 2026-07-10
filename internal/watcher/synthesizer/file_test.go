@@ -121,6 +121,44 @@ func TestFileSynthesizer_Synthesize_ValidAuthFile(t *testing.T) {
 	}
 }
 
+func TestFileSynthesizer_Synthesize_CodexOAuthWebsocketAttrs(t *testing.T) {
+	tempDir := t.TempDir()
+
+	authData := map[string]any{
+		"type":                "codex",
+		"email":               "codex@example.com",
+		"websockets":          true,
+		"non-stream-strategy": "websocket",
+	}
+	data, _ := json.Marshal(authData)
+	err := os.WriteFile(filepath.Join(tempDir, "codex-auth.json"), data, 0o644)
+	if err != nil {
+		t.Fatalf("failed to write auth file: %v", err)
+	}
+
+	synth := NewFileSynthesizer()
+	ctx := &SynthesisContext{
+		Config:      &config.Config{},
+		AuthDir:     tempDir,
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+
+	auths, err := synth.Synthesize(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(auths) != 1 {
+		t.Fatalf("expected 1 auth, got %d", len(auths))
+	}
+	if got := auths[0].Attributes["websockets"]; got != "true" {
+		t.Fatalf("websockets = %q, want %q", got, "true")
+	}
+	if got := auths[0].Attributes["non_stream_strategy"]; got != "websocket" {
+		t.Fatalf("non_stream_strategy = %q, want %q", got, "websocket")
+	}
+}
+
 func TestFileSynthesizer_Synthesize_GeminiProviderMapping(t *testing.T) {
 	tempDir := t.TempDir()
 

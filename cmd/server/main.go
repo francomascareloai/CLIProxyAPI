@@ -68,12 +68,14 @@ func main() {
 	var oauthCallbackPort int
 	var antigravityLogin bool
 	var kimiLogin bool
+	var minimaxLogin bool
 	var projectID string
 	var vertexImport string
 	var configPath string
 	var password string
 	var tuiMode bool
 	var standalone bool
+	var localModel bool
 
 	// Define command-line flags for different operation modes.
 	flag.BoolVar(&login, "login", false, "Login Google Account")
@@ -87,12 +89,14 @@ func main() {
 	flag.IntVar(&oauthCallbackPort, "oauth-callback-port", 0, "Override OAuth callback port (defaults to provider-specific port)")
 	flag.BoolVar(&antigravityLogin, "antigravity-login", false, "Login to Antigravity using OAuth")
 	flag.BoolVar(&kimiLogin, "kimi-login", false, "Login to Kimi using OAuth")
+	flag.BoolVar(&minimaxLogin, "minimax-login", false, "Login to MiniMax via browser and paste JWT token")
 	flag.StringVar(&projectID, "project_id", "", "Project ID (Gemini only, not required)")
 	flag.StringVar(&configPath, "config", DefaultConfigPath, "Configure File Path")
 	flag.StringVar(&vertexImport, "vertex-import", "", "Import Vertex service account key JSON file")
 	flag.StringVar(&password, "password", "", "")
 	flag.BoolVar(&tuiMode, "tui", false, "Start with terminal management UI")
 	flag.BoolVar(&standalone, "standalone", false, "In TUI mode, start an embedded local server")
+	flag.BoolVar(&localModel, "local-model", false, "Use embedded model catalog only, skip remote model fetching")
 
 	flag.CommandLine.Usage = func() {
 		out := flag.CommandLine.Output()
@@ -415,7 +419,7 @@ func main() {
 			configFileExists = true
 		}
 	}
-	usage.SetStatisticsEnabled(cfg.UsageStatisticsEnabled)
+	usage.ConfigureUsageRuntime(cfg.UsageStatisticsEnabled, cfg.UsageJournalRetentionDays, cfg.UsageJournalReplayMaxDays)
 	coreauth.SetQuotaCooldownDisabled(cfg.DisableCooling)
 
 	if err = logging.ConfigureLogOutput(cfg); err != nil {
@@ -482,8 +486,12 @@ func main() {
 		cmd.DoIFlowLogin(cfg, options)
 	} else if iflowCookie {
 		cmd.DoIFlowCookieAuth(cfg, options)
+	} else if minimaxLogin {
+		cmd.DoMiniMaxLogin(cfg, options)
 	} else if kimiLogin {
 		cmd.DoKimiLogin(cfg, options)
+	} else if minimaxLogin {
+		cmd.DoMiniMaxLogin(cfg, options)
 	} else {
 		// In cloud deploy mode without config file, just wait for shutdown signals
 		if isCloudDeploy && !configFileExists {

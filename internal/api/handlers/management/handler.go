@@ -162,6 +162,13 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 		}
 		envSecret := h.envSecret
 
+		// ponytail: disable-auth bypasses management key verification entirely.
+		// Remote clients still gated by allow-remote above; this only skips the key check.
+		if cfg != nil && cfg.RemoteManagement.DisableAuth {
+			c.Next()
+			return
+		}
+
 		fail := func() {}
 		if !localClient {
 			h.attemptsMu.Lock()

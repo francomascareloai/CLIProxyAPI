@@ -23,8 +23,9 @@ type usageCapabilities struct {
 }
 
 type usageDetailsRetention struct {
-	DetailsEphemeral          bool `json:"details_ephemeral"`
-	MaxRequestDetailsPerModel int  `json:"max_request_details_per_model"`
+	DetailsEphemeral          bool                     `json:"details_ephemeral"`
+	MaxRequestDetailsPerModel int                      `json:"max_request_details_per_model"`
+	UsageJournal              usage.UsageJournalStatus `json:"usage_journal"`
 }
 
 type usageImportPayload struct {
@@ -158,6 +159,7 @@ func decodeLegacyAuthIndex(raw json.RawMessage) string {
 
 // GetUsageStatistics returns the in-memory request statistics snapshot.
 func (h *Handler) GetUsageStatistics(c *gin.Context) {
+	now := time.Now().UTC()
 	var snapshot usage.StatisticsSnapshot
 	if h != nil && h.usageStats != nil {
 		snapshot = h.usageStats.Snapshot()
@@ -172,6 +174,7 @@ func (h *Handler) GetUsageStatistics(c *gin.Context) {
 		"retention": usageDetailsRetention{
 			DetailsEphemeral:          true,
 			MaxRequestDetailsPerModel: usage.MaxRequestDetailsPerModel(),
+			UsageJournal:              usage.GetUsageJournalStatus(now),
 		},
 		"usage":           snapshot,
 		"failed_requests": snapshot.FailureCount,

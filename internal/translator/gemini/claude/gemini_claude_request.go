@@ -67,6 +67,45 @@ func ConvertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 				return true
 			}
 			role := roleResult.String()
+			// Gemini only accepts user/model roles in contents; system goes in systemInstruction
+			if role == "system" {
+				contentsResult := messageResult.Get("content")
+				if contentsResult.Exists() {
+					if contentsResult.IsArray() {
+						contentsResult.ForEach(func(_, contentItem gjson.Result) bool {
+							if contentItem.Get("type").String() == "text" {
+								text := contentItem.Get("text").String()
+								if text != "" {
+									if gjson.Get(out, "system_instruction").Exists() {
+										out, _ = sjson.Set(out, "system_instruction.parts.-1.text", text)
+									} else {
+										sysInst := `{"role":"user","parts":[]}`
+										part := `{"text":""}`
+										part, _ = sjson.Set(part, "text", text)
+										sysInst, _ = sjson.SetRaw(sysInst, "parts.-1", part)
+										out, _ = sjson.SetRaw(out, "system_instruction", sysInst)
+									}
+								}
+							}
+							return true
+						})
+					} else if contentsResult.Type == gjson.String {
+						text := contentsResult.String()
+						if text != "" {
+							if gjson.Get(out, "system_instruction").Exists() {
+								out, _ = sjson.Set(out, "system_instruction.parts.-1.text", text)
+							} else {
+								sysInst := `{"role":"user","parts":[]}`
+								part := `{"text":""}`
+								part, _ = sjson.Set(part, "text", text)
+								sysInst, _ = sjson.SetRaw(sysInst, "parts.-1", part)
+								out, _ = sjson.SetRaw(out, "system_instruction", sysInst)
+							}
+						}
+					}
+				}
+				return true
+			}
 			if role == "assistant" {
 				role = "model"
 			}

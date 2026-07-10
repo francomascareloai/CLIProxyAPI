@@ -19,6 +19,7 @@ var providerAppliers = map[string]ProviderApplier{
 	"iflow":       nil,
 	"antigravity": nil,
 	"kimi":        nil,
+		"minimax":     nil,
 }
 
 // GetProviderApplier returns the ProviderApplier for the given provider name.
@@ -110,6 +111,20 @@ func ApplyThinking(body []byte, model string, fromFormat string, toFormat string
 	baseModel := suffixResult.ModelName
 	// Use provider-specific lookup to handle capability differences across providers.
 	modelInfo := registry.LookupModelInfo(baseModel, providerKey)
+
+	// Default bare GPT-5.4 to xhigh on Codex/OpenAI Responses.
+	// An explicit suffix (for example, gpt-5.4(high)) must win over the local default.
+	if providerFormat == "codex" &&
+		strings.EqualFold(strings.TrimSpace(baseModel), "gpt-5.4") &&
+		!suffixResult.HasSuffix {
+		if len(body) == 0 || !gjson.ValidBytes(body) {
+			body = []byte(`{}`)
+		}
+		return applier.Apply(body, ThinkingConfig{
+			Mode:  ModeLevel,
+			Level: LevelXHigh,
+		}, modelInfo)
+	}
 
 	// 3. Model capability check
 	// Unknown models are treated as user-defined so thinking config can still be applied.
@@ -333,7 +348,7 @@ func extractThinkingConfig(body []byte, provider string) ThinkingConfig {
 			return config
 		}
 		return extractOpenAIConfig(body)
-	case "kimi":
+	case "kimi", "minimax":
 		// Kimi uses OpenAI-compatible reasoning_effort format
 		return extractOpenAIConfig(body)
 	default:

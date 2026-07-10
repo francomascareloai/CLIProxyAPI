@@ -1,7 +1,6 @@
 package managementasset
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -19,7 +18,6 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 	staticassets "github.com/router-for-me/CLIProxyAPI/v6/static"
@@ -28,27 +26,55 @@ import (
 )
 
 const (
-	defaultManagementReleaseURL        = "https://api.github.com/repos/router-for-me/Cli-Proxy-API-Management-Center/releases/latest"
-	defaultManagementFallbackURL       = "https://cpamc.router-for.me/"
-	managementAssetName                = "management.html"
-	managementAssetCompatibilityHint   = "__periodFallback"
-	managementRollingCompatibilityHint = "rolling_windows_v1"
-	httpUserAgent                      = "CLIProxyAPI-management-updater"
-	managementSyncMinInterval          = 30 * time.Second
-	updateCheckInterval                = 3 * time.Hour
+	defaultManagementReleaseURL  = "https://api.github.com/repos/router-for-me/Cli-Proxy-API-Management-Center/releases/latest"
+	defaultManagementFallbackURL = "https://cpamc.router-for.me/"
+	managementAssetName          = "management.html"
+	httpUserAgent                = "CLIProxyAPI-management-updater"
+	managementSyncMinInterval    = 30 * time.Second
+	updateCheckInterval          = 3 * time.Hour
 )
 
 // ManagementFileName exposes the control panel asset filename.
 const ManagementFileName = managementAssetName
 
 var (
-	lastUpdateCheckMu   sync.Mutex
-	lastUpdateCheckTime time.Time
-	currentConfigPtr    atomic.Pointer[config.Config]
-	schedulerOnce       sync.Once
-	schedulerConfigPath atomic.Value
-	sfGroup             singleflight.Group
+	lastUpdateCheckMu          sync.Mutex
+	lastUpdateCheckTime        time.Time
+	currentConfigPtr           atomic.Pointer[config.Config]
+	schedulerOnce              sync.Once
+	schedulerConfigPath        atomic.Value
+	sfGroup                    singleflight.Group
+	managementFallbackURL      = defaultManagementFallbackURL
+	bundledManagementHTMLBytes = func() []byte { return staticassets.ManagementHTML }
 )
+
+// ResetSyncThrottleForTests clears the global management asset sync throttle.
+func ResetSyncThrottleForTests() {
+	lastUpdateCheckMu.Lock()
+	lastUpdateCheckTime = time.Time{}
+	lastUpdateCheckMu.Unlock()
+}
+
+// SetFallbackManagementURLForTests overrides the fallback management URL during tests.
+func SetFallbackManagementURLForTests(rawURL string) func() {
+	previous := managementFallbackURL
+	managementFallbackURL = strings.TrimSpace(rawURL)
+	return func() {
+		managementFallbackURL = previous
+	}
+}
+
+// SetBundledManagementHTMLForTests overrides the bundled management asset during tests.
+func SetBundledManagementHTMLForTests(data []byte) func() {
+	previous := bundledManagementHTMLBytes
+	copied := append([]byte(nil), data...)
+	bundledManagementHTMLBytes = func() []byte {
+		return copied
+	}
+	return func() {
+		bundledManagementHTMLBytes = previous
+	}
+}
 
 // SetCurrentConfig stores the latest configuration snapshot for management asset decisions.
 func SetCurrentConfig(cfg *config.Config) {
@@ -192,10 +218,12 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 	localPath := filepath.Join(staticDir, managementAssetName)
 
 	_, _, _ = sfGroup.Do(localPath, func() (interface{}, error) {
+		localCompatible := managementAssetFileCompatible(localPath)
+
 		lastUpdateCheckMu.Lock()
 		now := time.Now()
 		timeSinceLastAttempt := now.Sub(lastUpdateCheckTime)
-		if !lastUpdateCheckTime.IsZero() && timeSinceLastAttempt < managementSyncMinInterval {
+		if localCompatible && !lastUpdateCheckTime.IsZero() && timeSinceLastAttempt < managementSyncMinInterval {
 			lastUpdateCheckMu.Unlock()
 			log.Debugf(
 				"management asset sync skipped by throttle: last attempt %v ago (interval %v)",
@@ -206,8 +234,6 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 		}
 		lastUpdateCheckTime = now
 		lastUpdateCheckMu.Unlock()
-
-		localCompatible := managementAssetFileCompatible(localPath)
 
 		if errMkdirAll := os.MkdirAll(staticDir, 0o755); errMkdirAll != nil {
 			log.WithError(errMkdirAll).Warn("failed to prepare static directory for management asset")
@@ -234,7 +260,7 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 				}
 				return nil, nil
 			}
-			log.WithError(err).Warn("failed to fetch latest management release information")
+			log.WithError(err).Warn("failed to fetch latest management release information; keeping current validated asset")
 			return nil, nil
 		}
 
@@ -263,10 +289,12 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 			}
 			return nil, nil
 		}
-		if !isManagementAssetCompatible(data) {
-			log.Warn("management asset compatibility marker missing; trying bundled fallback")
+		if err = ValidateManagementHTML(data); err != nil {
+			log.WithError(err).Warn("downloaded management asset failed validation")
 			if !localCompatible {
-				_ = ensureBundledManagementHTML(localPath)
+				if ensureFallbackManagementHTML(ctx, client, localPath) || ensureBundledManagementHTML(localPath) {
+					return nil, nil
+				}
 			}
 			return nil, nil
 		}
@@ -287,7 +315,7 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 }
 
 func ensureFallbackManagementHTML(ctx context.Context, client *http.Client, localPath string) bool {
-	data, downloadedHash, err := downloadAsset(ctx, client, defaultManagementFallbackURL)
+	data, downloadedHash, err := downloadAsset(ctx, client, managementFallbackURL)
 	if err != nil {
 		log.WithError(err).Warn("failed to download fallback management control panel page")
 		return false
@@ -478,12 +506,12 @@ func parseDigest(digest string) string {
 }
 
 func bundledManagementHTML() ([]byte, error) {
-	data := staticassets.ManagementHTML
+	data := bundledManagementHTMLBytes()
 	if len(data) == 0 {
 		return nil, fmt.Errorf("bundled management asset is empty")
 	}
-	if !isManagementAssetCompatible(data) {
-		return nil, fmt.Errorf("bundled management asset missing compatibility markers")
+	if err := ValidateManagementHTML(data); err != nil {
+		return nil, fmt.Errorf("bundled management asset invalid: %w", err)
 	}
 	return data, nil
 }
@@ -500,18 +528,4 @@ func ensureBundledManagementHTML(localPath string) bool {
 	}
 	log.Info("management asset updated from bundled repository asset")
 	return true
-}
-
-func managementAssetFileCompatible(path string) bool {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return false
-	}
-	return isManagementAssetCompatible(data)
-}
-
-func isManagementAssetCompatible(data []byte) bool {
-	return bytes.Contains(data, []byte(usage.UsageAggregatesV2Capability)) &&
-		bytes.Contains(data, []byte(managementAssetCompatibilityHint)) &&
-		bytes.Contains(data, []byte(managementRollingCompatibilityHint))
 }

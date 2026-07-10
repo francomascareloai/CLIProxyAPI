@@ -38,6 +38,7 @@ func StripThinkingConfig(body []byte, provider string) []byte {
 	case "openai":
 		paths = []string{"reasoning_effort"}
 	case "kimi":
+	case "minimax":
 		paths = []string{
 			"reasoning_effort",
 			"thinking",

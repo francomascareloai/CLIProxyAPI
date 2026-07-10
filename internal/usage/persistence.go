@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -38,6 +39,49 @@ type persistedModel struct {
 	TotalRequests int64           `json:"total_requests"`
 	TotalTokens   int64           `json:"total_tokens"`
 	Details       []RequestDetail `json:"details"`
+}
+
+func buildLegacyBreakdowns(data persistedData) UsageBreakdownsSnapshot {
+	bySource := make(map[string]*usageBreakdownBucket)
+	byAuthIndex := make(map[string]*usageBreakdownBucket)
+	for _, api := range data.APIs {
+		if api == nil {
+			continue
+		}
+		for _, model := range api.Models {
+			if model == nil {
+				continue
+			}
+			for _, detail := range model.Details {
+				detail.Source = sanitiseDetailSource(detail.Source)
+				detail.Tokens = normaliseTokenStats(detail.Tokens)
+				source := strings.TrimSpace(detail.Source)
+				if source == "" {
+					source = "unknown"
+				}
+				authIndex := strings.TrimSpace(detail.AuthIndex)
+				if authIndex == "" {
+					authIndex = "unknown"
+				}
+				bucket, ok := bySource[source]
+				if !ok || bucket == nil {
+					bucket = &usageBreakdownBucket{Source: source}
+					bySource[source] = bucket
+				}
+				bucket.update(detail)
+				bucket, ok = byAuthIndex[authIndex]
+				if !ok || bucket == nil {
+					bucket = &usageBreakdownBucket{AuthIndex: authIndex}
+					byAuthIndex[authIndex] = bucket
+				}
+				bucket.update(detail)
+			}
+		}
+	}
+	return UsageBreakdownsSnapshot{
+		BySource:    cloneUsageBreakdownBuckets(bySource, true),
+		ByAuthIndex: cloneUsageBreakdownBuckets(byAuthIndex, false),
+	}
 }
 
 func orderedModelDetails(m *modelStats) []RequestDetail {
@@ -115,161 +159,99 @@ func SetPersistencePath(path string) {
 	persistencePath = path
 }
 
-// Save persists the current statistics to disk.
+func loadLegacyAggregatedSnapshot(path string) (AggregatedStatisticsSnapshot, bool, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return AggregatedStatisticsSnapshot{}, false, nil
+	}
+	jsonData, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return AggregatedStatisticsSnapshot{}, false, nil
+		}
+		return AggregatedStatisticsSnapshot{}, false, fmt.Errorf("failed to read legacy persistence file: %w", err)
+	}
+	if len(jsonData) == 0 {
+		return AggregatedStatisticsSnapshot{}, false, nil
+	}
+	var data persistedData
+	if err := json.Unmarshal(jsonData, &data); err != nil {
+		return AggregatedStatisticsSnapshot{}, false, fmt.Errorf("failed to unmarshal legacy statistics: %w", err)
+	}
+	if data.Version > persistenceVersion {
+		return AggregatedStatisticsSnapshot{}, false, fmt.Errorf("legacy usage statistics file has newer version (%d > %d)", data.Version, persistenceVersion)
+	}
+	result := AggregatedStatisticsSnapshot{
+		TotalRequests:  data.TotalRequests,
+		SuccessCount:   data.SuccessCount,
+		FailureCount:   data.FailureCount,
+		TotalTokens:    data.TotalTokens,
+		APIs:           make(map[string]AggregatedAPISnapshot, len(data.APIs)),
+		Breakdowns:     buildLegacyBreakdowns(data),
+		RequestsByDay:  make(map[string]int64, len(data.RequestsByDay)),
+		RequestsByHour: make(map[string]int64, len(data.RequestsByHour)),
+		TokensByDay:    make(map[string]int64, len(data.TokensByDay)),
+		TokensByHour:   make(map[string]int64, len(data.TokensByHour)),
+	}
+	for apiName, api := range data.APIs {
+		if api == nil {
+			continue
+		}
+		models := make(map[string]AggregatedModelSnapshot, len(api.Models))
+		for modelName, model := range api.Models {
+			if model == nil {
+				continue
+			}
+			models[modelName] = AggregatedModelSnapshot{
+				TotalRequests: model.TotalRequests,
+				TotalTokens:   model.TotalTokens,
+			}
+		}
+		result.APIs[apiName] = AggregatedAPISnapshot{
+			TotalRequests: api.TotalRequests,
+			TotalTokens:   api.TotalTokens,
+			Models:        models,
+		}
+	}
+	for key, value := range data.RequestsByDay {
+		result.RequestsByDay[key] = value
+	}
+	for hour, value := range data.RequestsByHour {
+		result.RequestsByHour[formatHour(hour)] = value
+	}
+	for key, value := range data.TokensByDay {
+		result.TokensByDay[key] = value
+	}
+	for hour, value := range data.TokensByHour {
+		result.TokensByHour[formatHour(hour)] = value
+	}
+	return result, true, nil
+}
+
+// Save persists the current statistics to the canonical storage.
 func (s *RequestStatistics) Save() error {
 	if s == nil {
 		return fmt.Errorf("statistics is nil")
 	}
-
-	s.mu.RLock()
-	data := persistedData{
-		Version:        persistenceVersion,
-		SavedAt:        time.Now(),
-		TotalRequests:  s.totalRequests,
-		SuccessCount:   s.successCount,
-		FailureCount:   s.failureCount,
-		TotalTokens:    s.totalTokens,
-		APIs:           make(map[string]*persistedAPI, len(s.apis)),
-		RequestsByDay:  make(map[string]int64, len(s.requestsByDay)),
-		RequestsByHour: make(map[int]int64, len(s.requestsByHour)),
-		TokensByDay:    make(map[string]int64, len(s.tokensByDay)),
-		TokensByHour:   make(map[int]int64, len(s.tokensByHour)),
-	}
-
-		for apiName, stats := range s.apis {
-			pAPI := &persistedAPI{
-				TotalRequests: stats.TotalRequests,
-				TotalTokens:   stats.TotalTokens,
-				Models:        make(map[string]*persistedModel, len(stats.Models)),
-			}
-			for modelName, modelStatsValue := range stats.Models {
-				details := orderedModelDetails(modelStatsValue)
-				pAPI.Models[modelName] = &persistedModel{
-					TotalRequests: modelStatsValue.TotalRequests,
-					TotalTokens:   modelStatsValue.TotalTokens,
-					Details:       details,
-				}
-			}
-			data.APIs[apiName] = pAPI
-		}
-
-	for k, v := range s.requestsByDay {
-		data.RequestsByDay[k] = v
-	}
-	for k, v := range s.requestsByHour {
-		data.RequestsByHour[k] = v
-	}
-	for k, v := range s.tokensByDay {
-		data.TokensByDay[k] = v
-	}
-	for k, v := range s.tokensByHour {
-		data.TokensByHour[k] = v
-	}
-	s.mu.RUnlock()
-
-	path := getPersistencePath()
-
-	// Ensure directory exists
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create persistence directory: %w", err)
-	}
-
-	// Write to temp file first, then rename (atomic)
-	tempPath := path + ".tmp"
-	jsonData, err := json.MarshalIndent(data, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal statistics: %w", err)
-	}
-
-	if err := os.WriteFile(tempPath, jsonData, 0644); err != nil {
-		return fmt.Errorf("failed to write temp file: %w", err)
-	}
-
-	if err := os.Rename(tempPath, path); err != nil {
-		os.Remove(tempPath) // cleanup temp file on error
-		return fmt.Errorf("failed to rename temp file: %w", err)
-	}
-
-	log.Debugf("usage statistics saved to %s (%d bytes)", path, len(jsonData))
-	return nil
+	return FlushUsageStatsNow(s)
 }
 
-// Load restores statistics from disk.
+// Load restores statistics from the legacy file into the canonical in-memory schema.
 func (s *RequestStatistics) Load() error {
 	if s == nil {
 		return fmt.Errorf("statistics is nil")
 	}
-
 	path := getPersistencePath()
-	jsonData, err := os.ReadFile(path)
+	snapshot, ok, err := loadLegacyAggregatedSnapshot(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			log.Debugf("no existing usage statistics file at %s", path)
-			return nil // Not an error, just no data yet
-		}
-		return fmt.Errorf("failed to read persistence file: %w", err)
+		return err
 	}
-
-	var data persistedData
-	if err := json.Unmarshal(jsonData, &data); err != nil {
-		return fmt.Errorf("failed to unmarshal statistics: %w", err)
-	}
-
-	if data.Version > persistenceVersion {
-		log.Warnf("usage statistics file has newer version (%d > %d), skipping load", data.Version, persistenceVersion)
+	if !ok {
+		log.Debugf("no existing legacy usage statistics file at %s", path)
 		return nil
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.totalRequests = data.TotalRequests
-	s.successCount = data.SuccessCount
-	s.failureCount = data.FailureCount
-	s.totalTokens = data.TotalTokens
-
-		s.apis = make(map[string]*apiStats, len(data.APIs))
-		for apiName, pAPI := range data.APIs {
-			stats := &apiStats{
-				TotalRequests: pAPI.TotalRequests,
-				TotalTokens:   pAPI.TotalTokens,
-				Models:        make(map[string]*modelStats, len(pAPI.Models)),
-			}
-			for modelName, pModel := range pAPI.Models {
-				details := make([]RequestDetail, len(pModel.Details))
-				copy(details, pModel.Details)
-				ms := newModelStats()
-				ms.TotalRequests = pModel.TotalRequests
-				ms.TotalTokens = pModel.TotalTokens
-				setModelDetails(ms, details)
-				stats.Models[modelName] = ms
-			}
-			s.apis[apiName] = stats
-		}
-
-	s.requestsByDay = make(map[string]int64, len(data.RequestsByDay))
-	for k, v := range data.RequestsByDay {
-		s.requestsByDay[k] = v
-	}
-
-	s.requestsByHour = make(map[int]int64, len(data.RequestsByHour))
-	for k, v := range data.RequestsByHour {
-		s.requestsByHour[k] = v
-	}
-
-	s.tokensByDay = make(map[string]int64, len(data.TokensByDay))
-	for k, v := range data.TokensByDay {
-		s.tokensByDay[k] = v
-	}
-
-	s.tokensByHour = make(map[int]int64, len(data.TokensByHour))
-	for k, v := range data.TokensByHour {
-		s.tokensByHour[k] = v
-	}
-
-	log.Infof("usage statistics loaded from %s (saved at %s, %d requests, %d tokens)",
-		path, data.SavedAt.Format(time.RFC3339), s.totalRequests, s.totalTokens)
+	s.ReplaceAggregatedSnapshot(snapshot)
+	log.Infof("legacy usage statistics loaded from %s (%d requests, %d tokens)", path, snapshot.TotalRequests, snapshot.TotalTokens)
 	return nil
 }
 
@@ -393,83 +375,26 @@ func (s *RequestStatistics) GetAccountStats() []AccountStats {
 	if s == nil {
 		return nil
 	}
-
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	// Aggregate by source (email)
-	accountMap := make(map[string]*AccountStats)
-
-	for _, apiStats := range s.apis {
-		for _, modelStats := range apiStats.Models {
-			seg1, seg2 := modelStats.orderedDetailSegments()
-			for _, detail := range seg1 {
-				source := detail.Source
-				if source == "" {
-					source = "unknown"
-				}
-
-				stats, ok := accountMap[source]
-				if !ok {
-					stats = &AccountStats{Source: source}
-					accountMap[source] = stats
-				}
-
-				stats.TotalRequests++
-				stats.TotalTokens += detail.Tokens.TotalTokens
-				stats.InputTokens += detail.Tokens.InputTokens
-				stats.OutputTokens += detail.Tokens.OutputTokens
-				if detail.Failed {
-					stats.FailureCount++
-				} else {
-					stats.SuccessCount++
-				}
-				if detail.Timestamp.After(stats.LastUsed) {
-					stats.LastUsed = detail.Timestamp
-				}
-			}
-			for _, detail := range seg2 {
-				source := detail.Source
-				if source == "" {
-					source = "unknown"
-				}
-
-				stats, ok := accountMap[source]
-				if !ok {
-					stats = &AccountStats{Source: source}
-					accountMap[source] = stats
-				}
-
-				stats.TotalRequests++
-				stats.TotalTokens += detail.Tokens.TotalTokens
-				stats.InputTokens += detail.Tokens.InputTokens
-				stats.OutputTokens += detail.Tokens.OutputTokens
-				if detail.Failed {
-					stats.FailureCount++
-				} else {
-					stats.SuccessCount++
-				}
-				if detail.Timestamp.After(stats.LastUsed) {
-					stats.LastUsed = detail.Timestamp
-				}
-			}
-		}
+	breakdowns := s.SnapshotUsageBreakdowns()
+	result := make([]AccountStats, 0, len(breakdowns.BySource))
+	for _, bucket := range breakdowns.BySource {
+		result = append(result, AccountStats{
+			Source:        bucket.Source,
+			TotalRequests: bucket.TotalRequests,
+			TotalTokens:   bucket.TotalTokens,
+			SuccessCount:  bucket.SuccessCount,
+			FailureCount:  bucket.FailureCount,
+			LastUsed:      bucket.LastUsed,
+			InputTokens:   bucket.InputTokens,
+			OutputTokens:  bucket.OutputTokens,
+		})
 	}
-
-	// Convert to slice and sort by total tokens descending
-	result := make([]AccountStats, 0, len(accountMap))
-	for _, stats := range accountMap {
-		result = append(result, *stats)
-	}
-
-	// Sort by TotalTokens descending
 	for i := 0; i < len(result)-1; i++ {
 		for j := i + 1; j < len(result); j++ {
-			if result[j].TotalTokens > result[i].TotalTokens {
+			if result[j].TotalTokens > result[i].TotalTokens || (result[j].TotalTokens == result[i].TotalTokens && result[j].Source < result[i].Source) {
 				result[i], result[j] = result[j], result[i]
 			}
 		}
 	}
-
 	return result
 }
