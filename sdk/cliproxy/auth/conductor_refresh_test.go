@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
 
 type refreshTestExecutor struct {
@@ -86,7 +86,7 @@ func TestApplyAuthFailureState_DeactivatedWorkspace_DisablesAuth(t *testing.T) {
 	now := time.Now()
 	a := &Auth{ID: "a1", Provider: "claude"}
 	err := &Error{HTTPStatus: 402, Code: "deactivated_workspace", Message: "deactivated_workspace"}
-	applyAuthFailureState(a, err, nil, now)
+	applyAuthFailureState(a, err, nil, now, false)
 	if !a.Disabled || a.Status != StatusDisabled {
 		t.Fatalf("auth not disabled: Disabled=%v Status=%s", a.Disabled, a.Status)
 	}

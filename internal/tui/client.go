@@ -140,11 +140,6 @@ func (c *Client) PutConfigYAML(yamlContent string) error {
 	return err
 }
 
-// GetUsage fetches usage statistics.
-func (c *Client) GetUsage() (map[string]any, error) {
-	return c.getJSON("/v0/management/usage")
-}
-
 // GetAuthFiles lists auth credential files.
 // API returns {"files": [...]}.
 func (c *Client) GetAuthFiles() ([]map[string]any, error) {
@@ -293,6 +288,12 @@ func (c *Client) DeleteAPIKey(index int) error {
 // API returns {"gemini-api-key": [...]}.
 func (c *Client) GetGeminiKeys() ([]map[string]any, error) {
 	return c.getWrappedKeyList("/v0/management/gemini-api-key", "gemini-api-key")
+}
+
+// GetInteractionsKeys fetches native Interactions API keys.
+// API returns {"interactions-api-key": [...]}.
+func (c *Client) GetInteractionsKeys() ([]map[string]any, error) {
+	return c.getWrappedKeyList("/v0/management/interactions-api-key", "interactions-api-key")
 }
 
 // GetClaudeKeys fetches Claude API keys.

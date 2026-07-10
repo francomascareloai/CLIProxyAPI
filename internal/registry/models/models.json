@@ -46,7 +46,8 @@
         "levels": [
           "low",
           "medium",
-          "high"
+          "high",
+          "max"
         ]
       }
     },
@@ -68,6 +69,97 @@
           "low",
           "medium",
           "high",
+          "max"
+        ]
+      }
+    },
+    {
+      "id": "claude-opus-4-7",
+      "object": "model",
+      "created": 1776297600,
+      "owned_by": "anthropic",
+      "type": "claude",
+      "display_name": "Claude Opus 4.7",
+      "description": "Premium model combining maximum intelligence with practical performance",
+      "context_length": 1000000,
+      "max_completion_tokens": 128000,
+      "thinking": {
+        "min": 1024,
+        "max": 128000,
+        "zero_allowed": true,
+        "levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      }
+    },
+    {
+      "id": "claude-opus-4-8",
+      "object": "model",
+      "created": 1779984000,
+      "owned_by": "anthropic",
+      "type": "claude",
+      "display_name": "Claude Opus 4.8",
+      "description": "Premium model combining maximum intelligence with practical performance",
+      "context_length": 1000000,
+      "max_completion_tokens": 128000,
+      "thinking": {
+        "min": 1024,
+        "max": 128000,
+        "zero_allowed": true,
+        "levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      }
+    },
+    {
+      "id": "claude-sonnet-5",
+      "object": "model",
+      "created": 1782777600,
+      "owned_by": "anthropic",
+      "type": "claude",
+      "display_name": "Claude Sonnet 5",
+      "description": "Anthropic's agentic Sonnet model for coding, tool use, and enterprise workflows",
+      "context_length": 1000000,
+      "max_completion_tokens": 128000,
+      "thinking": {
+        "zero_allowed": true,
+        "dynamic_allowed": true,
+        "levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      }
+    },
+    {
+      "id": "claude-fable-5",
+      "object": "model",
+      "created": 1781049600,
+      "owned_by": "anthropic",
+      "type": "claude",
+      "display_name": "Claude Fable 5",
+      "description": "Anthropic's most capable widely released model, for the most demanding reasoning and long-horizon agentic work",
+      "context_length": 1000000,
+      "max_completion_tokens": 128000,
+      "thinking": {
+        "min": 1024,
+        "max": 128000,
+        "zero_allowed": true,
+        "levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
           "max"
         ]
       }
@@ -280,6 +372,7 @@
         "dynamic_allowed": true,
         "levels": [
           "low",
+          "medium",
           "high"
         ]
       }
@@ -397,6 +490,36 @@
           "high"
         ]
       }
+    },
+    {
+      "id": "gemini-3.5-flash",
+      "object": "model",
+      "created": 1779235200,
+      "owned_by": "google",
+      "type": "gemini",
+      "display_name": "Gemini 3.5 Flash",
+      "name": "models/gemini-3.5-flash",
+      "version": "3.5",
+      "description": "Our most intelligent model built for speed, combining frontier intelligence with superior search and grounding.",
+      "inputTokenLimit": 1048576,
+      "outputTokenLimit": 65536,
+      "supportedGenerationMethods": [
+        "generateContent",
+        "countTokens",
+        "createCachedContent",
+        "batchGenerateContent"
+      ],
+      "thinking": {
+        "min": 128,
+        "max": 32768,
+        "dynamic_allowed": true,
+        "levels": [
+          "minimal",
+          "low",
+          "medium",
+          "high"
+        ]
+      }
     }
   ],
   "vertex": [
@@ -434,6 +557,30 @@
       "name": "models/gemini-2.5-flash",
       "version": "001",
       "description": "Stable version of Gemini 2.5 Flash, our mid-size multimodal model that supports up to 1 million tokens, released in June of 2025.",
+      "inputTokenLimit": 1048576,
+      "outputTokenLimit": 65536,
+      "supportedGenerationMethods": [
+        "generateContent",
+        "countTokens",
+        "createCachedContent",
+        "batchGenerateContent"
+      ],
+      "thinking": {
+        "max": 24576,
+        "zero_allowed": true,
+        "dynamic_allowed": true
+      }
+    },
+    {
+      "id": "gemini-2.5-flash-image",
+      "object": "model",
+      "created": 1763596800,
+      "owned_by": "google",
+      "type": "gemini",
+      "display_name": "Gemini 2.5 Flash Image",
+      "name": "models/gemini-2.5-flash-image",
+      "version": "001",
+      "description": "Our state-of-the-art image generation and editing model.",
       "inputTokenLimit": 1048576,
       "outputTokenLimit": 65536,
       "supportedGenerationMethods": [
@@ -554,6 +701,7 @@
         "dynamic_allowed": true,
         "levels": [
           "low",
+          "medium",
           "high"
         ]
       }
@@ -610,6 +758,8 @@
         "dynamic_allowed": true,
         "levels": [
           "minimal",
+          "low",
+          "medium",
           "high"
         ]
       }
@@ -711,6 +861,36 @@
       "supportedGenerationMethods": [
         "predict"
       ]
+    },
+    {
+      "id": "gemini-3.5-flash",
+      "object": "model",
+      "created": 1779235200,
+      "owned_by": "google",
+      "type": "gemini",
+      "display_name": "Gemini 3.5 Flash",
+      "name": "models/gemini-3.5-flash",
+      "version": "3.5",
+      "description": "Our most intelligent model built for speed, combining frontier intelligence with superior search and grounding.",
+      "inputTokenLimit": 1048576,
+      "outputTokenLimit": 65536,
+      "supportedGenerationMethods": [
+        "generateContent",
+        "countTokens",
+        "createCachedContent",
+        "batchGenerateContent"
+      ],
+      "thinking": {
+        "min": 128,
+        "max": 32768,
+        "dynamic_allowed": true,
+        "levels": [
+          "minimal",
+          "low",
+          "medium",
+          "high"
+        ]
+      }
     }
   ],
   "gemini-cli": [
@@ -838,6 +1018,7 @@
         "dynamic_allowed": true,
         "levels": [
           "low",
+          "medium",
           "high"
         ]
       }
@@ -896,6 +1077,8 @@
         "dynamic_allowed": true,
         "levels": [
           "minimal",
+          "low",
+          "medium",
           "high"
         ]
       }
@@ -1070,6 +1253,8 @@
         "dynamic_allowed": true,
         "levels": [
           "minimal",
+          "low",
+          "medium",
           "high"
         ]
       }
@@ -1165,24 +1350,29 @@
         "createCachedContent",
         "batchGenerateContent"
       ]
-    }
-  ],
-  "codex-free": [
+    },
     {
-      "id": "gpt-5",
+      "id": "gemini-3.5-flash",
       "object": "model",
-      "created": 1754524800,
-      "owned_by": "openai",
-      "type": "openai",
-      "display_name": "GPT 5",
-      "version": "gpt-5-2025-08-07",
-      "description": "Stable version of GPT 5, The best model for coding and agentic tasks across domains.",
-      "context_length": 400000,
-      "max_completion_tokens": 128000,
-      "supported_parameters": [
-        "tools"
+      "created": 1779235200,
+      "owned_by": "google",
+      "type": "gemini",
+      "display_name": "Gemini 3.5 Flash",
+      "name": "models/gemini-3.5-flash",
+      "version": "3.5",
+      "description": "Our most intelligent model built for speed, combining frontier intelligence with superior search and grounding.",
+      "inputTokenLimit": 1048576,
+      "outputTokenLimit": 65536,
+      "supportedGenerationMethods": [
+        "generateContent",
+        "countTokens",
+        "createCachedContent",
+        "batchGenerateContent"
       ],
       "thinking": {
+        "min": 128,
+        "max": 32768,
+        "dynamic_allowed": true,
         "levels": [
           "minimal",
           "low",
@@ -1190,127 +1380,18 @@
           "high"
         ]
       }
-    },
+    }
+  ],
+  "codex-free": [
     {
-      "id": "gpt-5-codex",
+      "id": "gpt-5.4-mini",
       "object": "model",
-      "created": 1757894400,
+      "created": 1773705600,
       "owned_by": "openai",
       "type": "openai",
-      "display_name": "GPT 5 Codex",
-      "version": "gpt-5-2025-09-15",
-      "description": "Stable version of GPT 5 Codex, The best model for coding and agentic tasks across domains.",
-      "context_length": 400000,
-      "max_completion_tokens": 128000,
-      "supported_parameters": [
-        "tools"
-      ],
-      "thinking": {
-        "levels": [
-          "low",
-          "medium",
-          "high"
-        ]
-      }
-    },
-    {
-      "id": "gpt-5-codex-mini",
-      "object": "model",
-      "created": 1762473600,
-      "owned_by": "openai",
-      "type": "openai",
-      "display_name": "GPT 5 Codex Mini",
-      "version": "gpt-5-2025-11-07",
-      "description": "Stable version of GPT 5 Codex Mini: cheaper, faster, but less capable version of GPT 5 Codex.",
-      "context_length": 400000,
-      "max_completion_tokens": 128000,
-      "supported_parameters": [
-        "tools"
-      ],
-      "thinking": {
-        "levels": [
-          "low",
-          "medium",
-          "high"
-        ]
-      }
-    },
-    {
-      "id": "gpt-5.1",
-      "object": "model",
-      "created": 1762905600,
-      "owned_by": "openai",
-      "type": "openai",
-      "display_name": "GPT 5",
-      "version": "gpt-5.1-2025-11-12",
-      "description": "Stable version of GPT 5, The best model for coding and agentic tasks across domains.",
-      "context_length": 400000,
-      "max_completion_tokens": 128000,
-      "supported_parameters": [
-        "tools"
-      ],
-      "thinking": {
-        "levels": [
-          "none",
-          "low",
-          "medium",
-          "high"
-        ]
-      }
-    },
-    {
-      "id": "gpt-5.1-codex",
-      "object": "model",
-      "created": 1762905600,
-      "owned_by": "openai",
-      "type": "openai",
-      "display_name": "GPT 5.1 Codex",
-      "version": "gpt-5.1-2025-11-12",
-      "description": "Stable version of GPT 5.1 Codex, The best model for coding and agentic tasks across domains.",
-      "context_length": 400000,
-      "max_completion_tokens": 128000,
-      "supported_parameters": [
-        "tools"
-      ],
-      "thinking": {
-        "levels": [
-          "low",
-          "medium",
-          "high"
-        ]
-      }
-    },
-    {
-      "id": "gpt-5.1-codex-mini",
-      "object": "model",
-      "created": 1762905600,
-      "owned_by": "openai",
-      "type": "openai",
-      "display_name": "GPT 5.1 Codex Mini",
-      "version": "gpt-5.1-2025-11-12",
-      "description": "Stable version of GPT 5.1 Codex Mini: cheaper, faster, but less capable version of GPT 5.1 Codex.",
-      "context_length": 400000,
-      "max_completion_tokens": 128000,
-      "supported_parameters": [
-        "tools"
-      ],
-      "thinking": {
-        "levels": [
-          "low",
-          "medium",
-          "high"
-        ]
-      }
-    },
-    {
-      "id": "gpt-5.1-codex-max",
-      "object": "model",
-      "created": 1763424000,
-      "owned_by": "openai",
-      "type": "openai",
-      "display_name": "GPT 5.1 Codex Max",
-      "version": "gpt-5.1-max",
-      "description": "Stable version of GPT 5.1 Codex Max",
+      "display_name": "GPT 5.4 Mini",
+      "version": "gpt-5.4-mini",
+      "description": "GPT-5.4 mini brings the strengths of GPT-5.4 to a faster, more efficient model designed for high-volume workloads.",
       "context_length": 400000,
       "max_completion_tokens": 128000,
       "supported_parameters": [
@@ -1326,22 +1407,21 @@
       }
     },
     {
-      "id": "gpt-5.2",
+      "id": "gpt-5.5",
       "object": "model",
-      "created": 1765440000,
+      "created": 1776902400,
       "owned_by": "openai",
       "type": "openai",
-      "display_name": "GPT 5.2",
-      "version": "gpt-5.2",
-      "description": "Stable version of GPT 5.2",
-      "context_length": 400000,
+      "display_name": "GPT 5.5",
+      "version": "gpt-5.5",
+      "description": "Frontier model for complex coding, research, and real-world work.",
+      "context_length": 272000,
       "max_completion_tokens": 128000,
       "supported_parameters": [
         "tools"
       ],
       "thinking": {
         "levels": [
-          "none",
           "low",
           "medium",
           "high",
@@ -1350,15 +1430,70 @@
       }
     },
     {
-      "id": "gpt-5.2-codex",
+      "id": "gpt-5.6-terra",
       "object": "model",
-      "created": 1765440000,
+      "created": 1783616400,
       "owned_by": "openai",
       "type": "openai",
-      "display_name": "GPT 5.2 Codex",
-      "version": "gpt-5.2",
-      "description": "Stable version of GPT 5.2 Codex, The best model for coding and agentic tasks across domains.",
-      "context_length": 400000,
+      "display_name": "GPT 5.6 Terra",
+      "version": "gpt-5.6",
+      "description": "Balanced agentic coding model for everyday work.",
+      "context_length": 372000,
+      "max_completion_tokens": 128000,
+      "supported_parameters": [
+        "tools"
+      ],
+      "thinking": {
+        "levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra"
+        ]
+      }
+    },
+    {
+      "id": "gpt-5.6-luna",
+      "object": "model",
+      "created": 1783616400,
+      "owned_by": "openai",
+      "type": "openai",
+      "display_name": "GPT 5.6 Luna",
+      "version": "gpt-5.6",
+      "description": "Fast and affordable agentic coding model.",
+      "context_length": 372000,
+      "max_completion_tokens": 128000,
+      "supported_parameters": [
+        "tools"
+      ],
+      "thinking": {
+        "levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "config": {
+        "override_header": {
+          "user-agent": "codex-tui/0.144.0 (Mac OS 26.5.1; arm64) iTerm.app/3.6.11 (codex-tui; 0.144.0)",
+          "originator": "codex-tui"
+        }
+      }
+    },
+    {
+      "id": "codex-auto-review",
+      "object": "model",
+      "created": 1776902400,
+      "owned_by": "openai",
+      "type": "openai",
+      "display_name": "Codex Auto Review",
+      "version": "Codex Auto Review",
+      "description": "Automatic approval review model for Codex.",
+      "context_length": 272000,
       "max_completion_tokens": 128000,
       "supported_parameters": [
         "tools"
@@ -1375,233 +1510,6 @@
   ],
   "codex-team": [
     {
-      "id": "gpt-5",
-      "object": "model",
-      "created": 1754524800,
-      "owned_by": "openai",
-      "type": "openai",
-      "display_name": "GPT 5",
-      "version": "gpt-5-2025-08-07",
-      "description": "Stable version of GPT 5, The best model for coding and agentic tasks across domains.",
-      "context_length": 400000,
-      "max_completion_tokens": 128000,
-      "supported_parameters": [
-        "tools"
-      ],
-      "thinking": {
-        "levels": [
-          "minimal",
-          "low",
-          "medium",
-          "high"
-        ]
-      }
-    },
-    {
-      "id": "gpt-5-codex",
-      "object": "model",
-      "created": 1757894400,
-      "owned_by": "openai",
-      "type": "openai",
-      "display_name": "GPT 5 Codex",
-      "version": "gpt-5-2025-09-15",
-      "description": "Stable version of GPT 5 Codex, The best model for coding and agentic tasks across domains.",
-      "context_length": 400000,
-      "max_completion_tokens": 128000,
-      "supported_parameters": [
-        "tools"
-      ],
-      "thinking": {
-        "levels": [
-          "low",
-          "medium",
-          "high"
-        ]
-      }
-    },
-    {
-      "id": "gpt-5-codex-mini",
-      "object": "model",
-      "created": 1762473600,
-      "owned_by": "openai",
-      "type": "openai",
-      "display_name": "GPT 5 Codex Mini",
-      "version": "gpt-5-2025-11-07",
-      "description": "Stable version of GPT 5 Codex Mini: cheaper, faster, but less capable version of GPT 5 Codex.",
-      "context_length": 400000,
-      "max_completion_tokens": 128000,
-      "supported_parameters": [
-        "tools"
-      ],
-      "thinking": {
-        "levels": [
-          "low",
-          "medium",
-          "high"
-        ]
-      }
-    },
-    {
-      "id": "gpt-5.1",
-      "object": "model",
-      "created": 1762905600,
-      "owned_by": "openai",
-      "type": "openai",
-      "display_name": "GPT 5",
-      "version": "gpt-5.1-2025-11-12",
-      "description": "Stable version of GPT 5, The best model for coding and agentic tasks across domains.",
-      "context_length": 400000,
-      "max_completion_tokens": 128000,
-      "supported_parameters": [
-        "tools"
-      ],
-      "thinking": {
-        "levels": [
-          "none",
-          "low",
-          "medium",
-          "high"
-        ]
-      }
-    },
-    {
-      "id": "gpt-5.1-codex",
-      "object": "model",
-      "created": 1762905600,
-      "owned_by": "openai",
-      "type": "openai",
-      "display_name": "GPT 5.1 Codex",
-      "version": "gpt-5.1-2025-11-12",
-      "description": "Stable version of GPT 5.1 Codex, The best model for coding and agentic tasks across domains.",
-      "context_length": 400000,
-      "max_completion_tokens": 128000,
-      "supported_parameters": [
-        "tools"
-      ],
-      "thinking": {
-        "levels": [
-          "low",
-          "medium",
-          "high"
-        ]
-      }
-    },
-    {
-      "id": "gpt-5.1-codex-mini",
-      "object": "model",
-      "created": 1762905600,
-      "owned_by": "openai",
-      "type": "openai",
-      "display_name": "GPT 5.1 Codex Mini",
-      "version": "gpt-5.1-2025-11-12",
-      "description": "Stable version of GPT 5.1 Codex Mini: cheaper, faster, but less capable version of GPT 5.1 Codex.",
-      "context_length": 400000,
-      "max_completion_tokens": 128000,
-      "supported_parameters": [
-        "tools"
-      ],
-      "thinking": {
-        "levels": [
-          "low",
-          "medium",
-          "high"
-        ]
-      }
-    },
-    {
-      "id": "gpt-5.1-codex-max",
-      "object": "model",
-      "created": 1763424000,
-      "owned_by": "openai",
-      "type": "openai",
-      "display_name": "GPT 5.1 Codex Max",
-      "version": "gpt-5.1-max",
-      "description": "Stable version of GPT 5.1 Codex Max",
-      "context_length": 400000,
-      "max_completion_tokens": 128000,
-      "supported_parameters": [
-        "tools"
-      ],
-      "thinking": {
-        "levels": [
-          "low",
-          "medium",
-          "high",
-          "xhigh"
-        ]
-      }
-    },
-    {
-      "id": "gpt-5.2",
-      "object": "model",
-      "created": 1765440000,
-      "owned_by": "openai",
-      "type": "openai",
-      "display_name": "GPT 5.2",
-      "version": "gpt-5.2",
-      "description": "Stable version of GPT 5.2",
-      "context_length": 400000,
-      "max_completion_tokens": 128000,
-      "supported_parameters": [
-        "tools"
-      ],
-      "thinking": {
-        "levels": [
-          "none",
-          "low",
-          "medium",
-          "high",
-          "xhigh"
-        ]
-      }
-    },
-    {
-      "id": "gpt-5.2-codex",
-      "object": "model",
-      "created": 1765440000,
-      "owned_by": "openai",
-      "type": "openai",
-      "display_name": "GPT 5.2 Codex",
-      "version": "gpt-5.2",
-      "description": "Stable version of GPT 5.2 Codex, The best model for coding and agentic tasks across domains.",
-      "context_length": 400000,
-      "max_completion_tokens": 128000,
-      "supported_parameters": [
-        "tools"
-      ],
-      "thinking": {
-        "levels": [
-          "low",
-          "medium",
-          "high",
-          "xhigh"
-        ]
-      }
-    },
-    {
-      "id": "gpt-5.3-codex",
-      "object": "model",
-      "created": 1770307200,
-      "owned_by": "openai",
-      "type": "openai",
-      "display_name": "GPT 5.3 Codex",
-      "version": "gpt-5.3",
-      "description": "Stable version of GPT 5.3 Codex, The best model for coding and agentic tasks across domains.",
-      "context_length": 400000,
-      "max_completion_tokens": 128000,
-      "supported_parameters": [
-        "tools"
-      ],
-      "thinking": {
-        "levels": [
-          "low",
-          "medium",
-          "high",
-          "xhigh"
-        ]
-      }
-    },
-    {
       "id": "gpt-5.4",
       "object": "model",
       "created": 1772668800,
@@ -1611,6 +1519,155 @@
       "version": "gpt-5.4",
       "description": "Stable version of GPT 5.4",
       "context_length": 1050000,
+      "max_completion_tokens": 128000,
+      "supported_parameters": [
+        "tools"
+      ],
+      "thinking": {
+        "levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ]
+      }
+    },
+    {
+      "id": "gpt-5.4-mini",
+      "object": "model",
+      "created": 1773705600,
+      "owned_by": "openai",
+      "type": "openai",
+      "display_name": "GPT 5.4 Mini",
+      "version": "gpt-5.4-mini",
+      "description": "GPT-5.4 mini brings the strengths of GPT-5.4 to a faster, more efficient model designed for high-volume workloads.",
+      "context_length": 400000,
+      "max_completion_tokens": 128000,
+      "supported_parameters": [
+        "tools"
+      ],
+      "thinking": {
+        "levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ]
+      }
+    },
+    {
+      "id": "gpt-5.5",
+      "object": "model",
+      "created": 1776902400,
+      "owned_by": "openai",
+      "type": "openai",
+      "display_name": "GPT 5.5",
+      "version": "gpt-5.5",
+      "description": "Frontier model for complex coding, research, and real-world work.",
+      "context_length": 272000,
+      "max_completion_tokens": 128000,
+      "supported_parameters": [
+        "tools"
+      ],
+      "thinking": {
+        "levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ]
+      }
+    },
+    {
+      "id": "gpt-5.6-sol",
+      "object": "model",
+      "created": 1783616400,
+      "owned_by": "openai",
+      "type": "openai",
+      "display_name": "GPT 5.6 Sol",
+      "version": "gpt-5.6",
+      "description": "Our most capable model yet. GPT-5.6 Sol can tackle complex code changes, dig into research, produce polished documents, and take on your most ambitious work. Sol is highly capable at lower reasoning efforts—try starting lower, then turn it up for harder jobs.",
+      "context_length": 372000,
+      "max_completion_tokens": 128000,
+      "supported_parameters": [
+        "tools"
+      ],
+      "thinking": {
+        "levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra"
+        ]
+      }
+    },
+    {
+      "id": "gpt-5.6-terra",
+      "object": "model",
+      "created": 1783616400,
+      "owned_by": "openai",
+      "type": "openai",
+      "display_name": "GPT 5.6 Terra",
+      "version": "gpt-5.6",
+      "description": "Balanced agentic coding model for everyday work.",
+      "context_length": 372000,
+      "max_completion_tokens": 128000,
+      "supported_parameters": [
+        "tools"
+      ],
+      "thinking": {
+        "levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra"
+        ]
+      }
+    },
+    {
+      "id": "gpt-5.6-luna",
+      "object": "model",
+      "created": 1783616400,
+      "owned_by": "openai",
+      "type": "openai",
+      "display_name": "GPT 5.6 Luna",
+      "version": "gpt-5.6",
+      "description": "Fast and affordable agentic coding model.",
+      "context_length": 372000,
+      "max_completion_tokens": 128000,
+      "supported_parameters": [
+        "tools"
+      ],
+      "thinking": {
+        "levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "config": {
+        "override_header": {
+          "user-agent": "codex-tui/0.144.0 (Mac OS 26.5.1; arm64) iTerm.app/3.6.11 (codex-tui; 0.144.0)",
+          "originator": "codex-tui"
+        }
+      }
+    },
+    {
+      "id": "codex-auto-review",
+      "object": "model",
+      "created": 1776902400,
+      "owned_by": "openai",
+      "type": "openai",
+      "display_name": "Codex Auto Review",
+      "version": "Codex Auto Review",
+      "description": "Automatic approval review model for Codex.",
+      "context_length": 272000,
       "max_completion_tokens": 128000,
       "supported_parameters": [
         "tools"
@@ -1627,233 +1684,6 @@
   ],
   "codex-plus": [
     {
-      "id": "gpt-5",
-      "object": "model",
-      "created": 1754524800,
-      "owned_by": "openai",
-      "type": "openai",
-      "display_name": "GPT 5",
-      "version": "gpt-5-2025-08-07",
-      "description": "Stable version of GPT 5, The best model for coding and agentic tasks across domains.",
-      "context_length": 400000,
-      "max_completion_tokens": 128000,
-      "supported_parameters": [
-        "tools"
-      ],
-      "thinking": {
-        "levels": [
-          "minimal",
-          "low",
-          "medium",
-          "high"
-        ]
-      }
-    },
-    {
-      "id": "gpt-5-codex",
-      "object": "model",
-      "created": 1757894400,
-      "owned_by": "openai",
-      "type": "openai",
-      "display_name": "GPT 5 Codex",
-      "version": "gpt-5-2025-09-15",
-      "description": "Stable version of GPT 5 Codex, The best model for coding and agentic tasks across domains.",
-      "context_length": 400000,
-      "max_completion_tokens": 128000,
-      "supported_parameters": [
-        "tools"
-      ],
-      "thinking": {
-        "levels": [
-          "low",
-          "medium",
-          "high"
-        ]
-      }
-    },
-    {
-      "id": "gpt-5-codex-mini",
-      "object": "model",
-      "created": 1762473600,
-      "owned_by": "openai",
-      "type": "openai",
-      "display_name": "GPT 5 Codex Mini",
-      "version": "gpt-5-2025-11-07",
-      "description": "Stable version of GPT 5 Codex Mini: cheaper, faster, but less capable version of GPT 5 Codex.",
-      "context_length": 400000,
-      "max_completion_tokens": 128000,
-      "supported_parameters": [
-        "tools"
-      ],
-      "thinking": {
-        "levels": [
-          "low",
-          "medium",
-          "high"
-        ]
-      }
-    },
-    {
-      "id": "gpt-5.1",
-      "object": "model",
-      "created": 1762905600,
-      "owned_by": "openai",
-      "type": "openai",
-      "display_name": "GPT 5",
-      "version": "gpt-5.1-2025-11-12",
-      "description": "Stable version of GPT 5, The best model for coding and agentic tasks across domains.",
-      "context_length": 400000,
-      "max_completion_tokens": 128000,
-      "supported_parameters": [
-        "tools"
-      ],
-      "thinking": {
-        "levels": [
-          "none",
-          "low",
-          "medium",
-          "high"
-        ]
-      }
-    },
-    {
-      "id": "gpt-5.1-codex",
-      "object": "model",
-      "created": 1762905600,
-      "owned_by": "openai",
-      "type": "openai",
-      "display_name": "GPT 5.1 Codex",
-      "version": "gpt-5.1-2025-11-12",
-      "description": "Stable version of GPT 5.1 Codex, The best model for coding and agentic tasks across domains.",
-      "context_length": 400000,
-      "max_completion_tokens": 128000,
-      "supported_parameters": [
-        "tools"
-      ],
-      "thinking": {
-        "levels": [
-          "low",
-          "medium",
-          "high"
-        ]
-      }
-    },
-    {
-      "id": "gpt-5.1-codex-mini",
-      "object": "model",
-      "created": 1762905600,
-      "owned_by": "openai",
-      "type": "openai",
-      "display_name": "GPT 5.1 Codex Mini",
-      "version": "gpt-5.1-2025-11-12",
-      "description": "Stable version of GPT 5.1 Codex Mini: cheaper, faster, but less capable version of GPT 5.1 Codex.",
-      "context_length": 400000,
-      "max_completion_tokens": 128000,
-      "supported_parameters": [
-        "tools"
-      ],
-      "thinking": {
-        "levels": [
-          "low",
-          "medium",
-          "high"
-        ]
-      }
-    },
-    {
-      "id": "gpt-5.1-codex-max",
-      "object": "model",
-      "created": 1763424000,
-      "owned_by": "openai",
-      "type": "openai",
-      "display_name": "GPT 5.1 Codex Max",
-      "version": "gpt-5.1-max",
-      "description": "Stable version of GPT 5.1 Codex Max",
-      "context_length": 400000,
-      "max_completion_tokens": 128000,
-      "supported_parameters": [
-        "tools"
-      ],
-      "thinking": {
-        "levels": [
-          "low",
-          "medium",
-          "high",
-          "xhigh"
-        ]
-      }
-    },
-    {
-      "id": "gpt-5.2",
-      "object": "model",
-      "created": 1765440000,
-      "owned_by": "openai",
-      "type": "openai",
-      "display_name": "GPT 5.2",
-      "version": "gpt-5.2",
-      "description": "Stable version of GPT 5.2",
-      "context_length": 400000,
-      "max_completion_tokens": 128000,
-      "supported_parameters": [
-        "tools"
-      ],
-      "thinking": {
-        "levels": [
-          "none",
-          "low",
-          "medium",
-          "high",
-          "xhigh"
-        ]
-      }
-    },
-    {
-      "id": "gpt-5.2-codex",
-      "object": "model",
-      "created": 1765440000,
-      "owned_by": "openai",
-      "type": "openai",
-      "display_name": "GPT 5.2 Codex",
-      "version": "gpt-5.2",
-      "description": "Stable version of GPT 5.2 Codex, The best model for coding and agentic tasks across domains.",
-      "context_length": 400000,
-      "max_completion_tokens": 128000,
-      "supported_parameters": [
-        "tools"
-      ],
-      "thinking": {
-        "levels": [
-          "low",
-          "medium",
-          "high",
-          "xhigh"
-        ]
-      }
-    },
-    {
-      "id": "gpt-5.3-codex",
-      "object": "model",
-      "created": 1770307200,
-      "owned_by": "openai",
-      "type": "openai",
-      "display_name": "GPT 5.3 Codex",
-      "version": "gpt-5.3",
-      "description": "Stable version of GPT 5.3 Codex, The best model for coding and agentic tasks across domains.",
-      "context_length": 400000,
-      "max_completion_tokens": 128000,
-      "supported_parameters": [
-        "tools"
-      ],
-      "thinking": {
-        "levels": [
-          "low",
-          "medium",
-          "high",
-          "xhigh"
-        ]
-      }
-    },
-    {
       "id": "gpt-5.3-codex-spark",
       "object": "model",
       "created": 1770912000,
@@ -1886,6 +1716,155 @@
       "version": "gpt-5.4",
       "description": "Stable version of GPT 5.4",
       "context_length": 1050000,
+      "max_completion_tokens": 128000,
+      "supported_parameters": [
+        "tools"
+      ],
+      "thinking": {
+        "levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ]
+      }
+    },
+    {
+      "id": "gpt-5.4-mini",
+      "object": "model",
+      "created": 1773705600,
+      "owned_by": "openai",
+      "type": "openai",
+      "display_name": "GPT 5.4 Mini",
+      "version": "gpt-5.4-mini",
+      "description": "GPT-5.4 mini brings the strengths of GPT-5.4 to a faster, more efficient model designed for high-volume workloads.",
+      "context_length": 400000,
+      "max_completion_tokens": 128000,
+      "supported_parameters": [
+        "tools"
+      ],
+      "thinking": {
+        "levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ]
+      }
+    },
+    {
+      "id": "gpt-5.5",
+      "object": "model",
+      "created": 1776902400,
+      "owned_by": "openai",
+      "type": "openai",
+      "display_name": "GPT 5.5",
+      "version": "gpt-5.5",
+      "description": "Frontier model for complex coding, research, and real-world work.",
+      "context_length": 272000,
+      "max_completion_tokens": 128000,
+      "supported_parameters": [
+        "tools"
+      ],
+      "thinking": {
+        "levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ]
+      }
+    },
+    {
+      "id": "gpt-5.6-sol",
+      "object": "model",
+      "created": 1783616400,
+      "owned_by": "openai",
+      "type": "openai",
+      "display_name": "GPT 5.6 Sol",
+      "version": "gpt-5.6",
+      "description": "Our most capable model yet. GPT-5.6 Sol can tackle complex code changes, dig into research, produce polished documents, and take on your most ambitious work. Sol is highly capable at lower reasoning efforts—try starting lower, then turn it up for harder jobs.",
+      "context_length": 372000,
+      "max_completion_tokens": 128000,
+      "supported_parameters": [
+        "tools"
+      ],
+      "thinking": {
+        "levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra"
+        ]
+      }
+    },
+    {
+      "id": "gpt-5.6-terra",
+      "object": "model",
+      "created": 1783616400,
+      "owned_by": "openai",
+      "type": "openai",
+      "display_name": "GPT 5.6 Terra",
+      "version": "gpt-5.6",
+      "description": "Balanced agentic coding model for everyday work.",
+      "context_length": 372000,
+      "max_completion_tokens": 128000,
+      "supported_parameters": [
+        "tools"
+      ],
+      "thinking": {
+        "levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra"
+        ]
+      }
+    },
+    {
+      "id": "gpt-5.6-luna",
+      "object": "model",
+      "created": 1783616400,
+      "owned_by": "openai",
+      "type": "openai",
+      "display_name": "GPT 5.6 Luna",
+      "version": "gpt-5.6",
+      "description": "Fast and affordable agentic coding model.",
+      "context_length": 372000,
+      "max_completion_tokens": 128000,
+      "supported_parameters": [
+        "tools"
+      ],
+      "thinking": {
+        "levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "config": {
+        "override_header": {
+          "user-agent": "codex-tui/0.144.0 (Mac OS 26.5.1; arm64) iTerm.app/3.6.11 (codex-tui; 0.144.0)",
+          "originator": "codex-tui"
+        }
+      }
+    },
+    {
+      "id": "codex-auto-review",
+      "object": "model",
+      "created": 1776902400,
+      "owned_by": "openai",
+      "type": "openai",
+      "display_name": "Codex Auto Review",
+      "version": "Codex Auto Review",
+      "description": "Automatic approval review model for Codex.",
+      "context_length": 272000,
       "max_completion_tokens": 128000,
       "supported_parameters": [
         "tools"
@@ -1902,233 +1881,6 @@
   ],
   "codex-pro": [
     {
-      "id": "gpt-5",
-      "object": "model",
-      "created": 1754524800,
-      "owned_by": "openai",
-      "type": "openai",
-      "display_name": "GPT 5",
-      "version": "gpt-5-2025-08-07",
-      "description": "Stable version of GPT 5, The best model for coding and agentic tasks across domains.",
-      "context_length": 400000,
-      "max_completion_tokens": 128000,
-      "supported_parameters": [
-        "tools"
-      ],
-      "thinking": {
-        "levels": [
-          "minimal",
-          "low",
-          "medium",
-          "high"
-        ]
-      }
-    },
-    {
-      "id": "gpt-5-codex",
-      "object": "model",
-      "created": 1757894400,
-      "owned_by": "openai",
-      "type": "openai",
-      "display_name": "GPT 5 Codex",
-      "version": "gpt-5-2025-09-15",
-      "description": "Stable version of GPT 5 Codex, The best model for coding and agentic tasks across domains.",
-      "context_length": 400000,
-      "max_completion_tokens": 128000,
-      "supported_parameters": [
-        "tools"
-      ],
-      "thinking": {
-        "levels": [
-          "low",
-          "medium",
-          "high"
-        ]
-      }
-    },
-    {
-      "id": "gpt-5-codex-mini",
-      "object": "model",
-      "created": 1762473600,
-      "owned_by": "openai",
-      "type": "openai",
-      "display_name": "GPT 5 Codex Mini",
-      "version": "gpt-5-2025-11-07",
-      "description": "Stable version of GPT 5 Codex Mini: cheaper, faster, but less capable version of GPT 5 Codex.",
-      "context_length": 400000,
-      "max_completion_tokens": 128000,
-      "supported_parameters": [
-        "tools"
-      ],
-      "thinking": {
-        "levels": [
-          "low",
-          "medium",
-          "high"
-        ]
-      }
-    },
-    {
-      "id": "gpt-5.1",
-      "object": "model",
-      "created": 1762905600,
-      "owned_by": "openai",
-      "type": "openai",
-      "display_name": "GPT 5",
-      "version": "gpt-5.1-2025-11-12",
-      "description": "Stable version of GPT 5, The best model for coding and agentic tasks across domains.",
-      "context_length": 400000,
-      "max_completion_tokens": 128000,
-      "supported_parameters": [
-        "tools"
-      ],
-      "thinking": {
-        "levels": [
-          "none",
-          "low",
-          "medium",
-          "high"
-        ]
-      }
-    },
-    {
-      "id": "gpt-5.1-codex",
-      "object": "model",
-      "created": 1762905600,
-      "owned_by": "openai",
-      "type": "openai",
-      "display_name": "GPT 5.1 Codex",
-      "version": "gpt-5.1-2025-11-12",
-      "description": "Stable version of GPT 5.1 Codex, The best model for coding and agentic tasks across domains.",
-      "context_length": 400000,
-      "max_completion_tokens": 128000,
-      "supported_parameters": [
-        "tools"
-      ],
-      "thinking": {
-        "levels": [
-          "low",
-          "medium",
-          "high"
-        ]
-      }
-    },
-    {
-      "id": "gpt-5.1-codex-mini",
-      "object": "model",
-      "created": 1762905600,
-      "owned_by": "openai",
-      "type": "openai",
-      "display_name": "GPT 5.1 Codex Mini",
-      "version": "gpt-5.1-2025-11-12",
-      "description": "Stable version of GPT 5.1 Codex Mini: cheaper, faster, but less capable version of GPT 5.1 Codex.",
-      "context_length": 400000,
-      "max_completion_tokens": 128000,
-      "supported_parameters": [
-        "tools"
-      ],
-      "thinking": {
-        "levels": [
-          "low",
-          "medium",
-          "high"
-        ]
-      }
-    },
-    {
-      "id": "gpt-5.1-codex-max",
-      "object": "model",
-      "created": 1763424000,
-      "owned_by": "openai",
-      "type": "openai",
-      "display_name": "GPT 5.1 Codex Max",
-      "version": "gpt-5.1-max",
-      "description": "Stable version of GPT 5.1 Codex Max",
-      "context_length": 400000,
-      "max_completion_tokens": 128000,
-      "supported_parameters": [
-        "tools"
-      ],
-      "thinking": {
-        "levels": [
-          "low",
-          "medium",
-          "high",
-          "xhigh"
-        ]
-      }
-    },
-    {
-      "id": "gpt-5.2",
-      "object": "model",
-      "created": 1765440000,
-      "owned_by": "openai",
-      "type": "openai",
-      "display_name": "GPT 5.2",
-      "version": "gpt-5.2",
-      "description": "Stable version of GPT 5.2",
-      "context_length": 400000,
-      "max_completion_tokens": 128000,
-      "supported_parameters": [
-        "tools"
-      ],
-      "thinking": {
-        "levels": [
-          "none",
-          "low",
-          "medium",
-          "high",
-          "xhigh"
-        ]
-      }
-    },
-    {
-      "id": "gpt-5.2-codex",
-      "object": "model",
-      "created": 1765440000,
-      "owned_by": "openai",
-      "type": "openai",
-      "display_name": "GPT 5.2 Codex",
-      "version": "gpt-5.2",
-      "description": "Stable version of GPT 5.2 Codex, The best model for coding and agentic tasks across domains.",
-      "context_length": 400000,
-      "max_completion_tokens": 128000,
-      "supported_parameters": [
-        "tools"
-      ],
-      "thinking": {
-        "levels": [
-          "low",
-          "medium",
-          "high",
-          "xhigh"
-        ]
-      }
-    },
-    {
-      "id": "gpt-5.3-codex",
-      "object": "model",
-      "created": 1770307200,
-      "owned_by": "openai",
-      "type": "openai",
-      "display_name": "GPT 5.3 Codex",
-      "version": "gpt-5.3",
-      "description": "Stable version of GPT 5.3 Codex, The best model for coding and agentic tasks across domains.",
-      "context_length": 400000,
-      "max_completion_tokens": 128000,
-      "supported_parameters": [
-        "tools"
-      ],
-      "thinking": {
-        "levels": [
-          "low",
-          "medium",
-          "high",
-          "xhigh"
-        ]
-      }
-    },
-    {
       "id": "gpt-5.3-codex-spark",
       "object": "model",
       "created": 1770912000,
@@ -2173,127 +1925,23 @@
           "xhigh"
         ]
       }
-    }
-  ],
-  "qwen": [
+    },
     {
-      "id": "qwen3-coder-plus",
+      "id": "gpt-5.4-mini",
       "object": "model",
-      "created": 1753228800,
-      "owned_by": "qwen",
-      "type": "qwen",
-      "display_name": "Qwen3 Coder Plus",
-      "version": "3.0",
-      "description": "Advanced code generation and understanding model",
-      "context_length": 32768,
-      "max_completion_tokens": 8192,
+      "created": 1773705600,
+      "owned_by": "openai",
+      "type": "openai",
+      "display_name": "GPT 5.4 Mini",
+      "version": "gpt-5.4-mini",
+      "description": "GPT-5.4 mini brings the strengths of GPT-5.4 to a faster, more efficient model designed for high-volume workloads.",
+      "context_length": 400000,
+      "max_completion_tokens": 128000,
       "supported_parameters": [
-        "temperature",
-        "top_p",
-        "max_tokens",
-        "stream",
-        "stop"
-      ]
-    },
-    {
-      "id": "qwen3-coder-flash",
-      "object": "model",
-      "created": 1753228800,
-      "owned_by": "qwen",
-      "type": "qwen",
-      "display_name": "Qwen3 Coder Flash",
-      "version": "3.0",
-      "description": "Fast code generation model",
-      "context_length": 8192,
-      "max_completion_tokens": 2048,
-      "supported_parameters": [
-        "temperature",
-        "top_p",
-        "max_tokens",
-        "stream",
-        "stop"
-      ]
-    },
-    {
-      "id": "coder-model",
-      "object": "model",
-      "created": 1771171200,
-      "owned_by": "qwen",
-      "type": "qwen",
-      "display_name": "Qwen 3.5 Plus",
-      "version": "3.5",
-      "description": "efficient hybrid model with leading coding performance",
-      "context_length": 1048576,
-      "max_completion_tokens": 65536,
-      "supported_parameters": [
-        "temperature",
-        "top_p",
-        "max_tokens",
-        "stream",
-        "stop"
-      ]
-    },
-    {
-      "id": "vision-model",
-      "object": "model",
-      "created": 1758672000,
-      "owned_by": "qwen",
-      "type": "qwen",
-      "display_name": "Qwen3 Vision Model",
-      "version": "3.0",
-      "description": "Vision model model",
-      "context_length": 32768,
-      "max_completion_tokens": 2048,
-      "supported_parameters": [
-        "temperature",
-        "top_p",
-        "max_tokens",
-        "stream",
-        "stop"
-      ]
-    }
-  ],
-  "iflow": [
-    {
-      "id": "qwen3-coder-plus",
-      "object": "model",
-      "created": 1753228800,
-      "owned_by": "iflow",
-      "type": "iflow",
-      "display_name": "Qwen3-Coder-Plus",
-      "description": "Qwen3 Coder Plus code generation"
-    },
-    {
-      "id": "qwen3-max",
-      "object": "model",
-      "created": 1758672000,
-      "owned_by": "iflow",
-      "type": "iflow",
-      "display_name": "Qwen3-Max",
-      "description": "Qwen3 flagship model"
-    },
-    {
-      "id": "qwen3-vl-plus",
-      "object": "model",
-      "created": 1758672000,
-      "owned_by": "iflow",
-      "type": "iflow",
-      "display_name": "Qwen3-VL-Plus",
-      "description": "Qwen3 multimodal vision-language"
-    },
-    {
-      "id": "qwen3-max-preview",
-      "object": "model",
-      "created": 1757030400,
-      "owned_by": "iflow",
-      "type": "iflow",
-      "display_name": "Qwen3-Max-Preview",
-      "description": "Qwen3 Max preview build",
+        "tools"
+      ],
       "thinking": {
         "levels": [
-          "none",
-          "auto",
-          "minimal",
           "low",
           "medium",
           "high",
@@ -2302,18 +1950,21 @@
       }
     },
     {
-      "id": "glm-4.6",
+      "id": "gpt-5.5",
       "object": "model",
-      "created": 1759190400,
-      "owned_by": "iflow",
-      "type": "iflow",
-      "display_name": "GLM-4.6",
-      "description": "Zhipu GLM 4.6 general model",
+      "created": 1776902400,
+      "owned_by": "openai",
+      "type": "openai",
+      "display_name": "GPT 5.5",
+      "version": "gpt-5.5",
+      "description": "Frontier model for complex coding, research, and real-world work.",
+      "context_length": 272000,
+      "max_completion_tokens": 128000,
+      "supported_parameters": [
+        "tools"
+      ],
       "thinking": {
         "levels": [
-          "none",
-          "auto",
-          "minimal",
           "low",
           "medium",
           "high",
@@ -2322,116 +1973,107 @@
       }
     },
     {
-      "id": "kimi-k2",
+      "id": "gpt-5.6-sol",
       "object": "model",
-      "created": 1752192000,
-      "owned_by": "iflow",
-      "type": "iflow",
-      "display_name": "Kimi-K2",
-      "description": "Moonshot Kimi K2 general model"
-    },
-    {
-      "id": "deepseek-v3.2",
-      "object": "model",
-      "created": 1759104000,
-      "owned_by": "iflow",
-      "type": "iflow",
-      "display_name": "DeepSeek-V3.2-Exp",
-      "description": "DeepSeek V3.2 experimental",
+      "created": 1783616400,
+      "owned_by": "openai",
+      "type": "openai",
+      "display_name": "GPT 5.6 Sol",
+      "version": "gpt-5.6",
+      "description": "Our most capable model yet. GPT-5.6 Sol can tackle complex code changes, dig into research, produce polished documents, and take on your most ambitious work. Sol is highly capable at lower reasoning efforts—try starting lower, then turn it up for harder jobs.",
+      "context_length": 372000,
+      "max_completion_tokens": 128000,
+      "supported_parameters": [
+        "tools"
+      ],
       "thinking": {
         "levels": [
-          "none",
-          "auto",
-          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra"
+        ]
+      }
+    },
+    {
+      "id": "gpt-5.6-terra",
+      "object": "model",
+      "created": 1783616400,
+      "owned_by": "openai",
+      "type": "openai",
+      "display_name": "GPT 5.6 Terra",
+      "version": "gpt-5.6",
+      "description": "Balanced agentic coding model for everyday work.",
+      "context_length": 372000,
+      "max_completion_tokens": 128000,
+      "supported_parameters": [
+        "tools"
+      ],
+      "thinking": {
+        "levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra"
+        ]
+      }
+    },
+    {
+      "id": "gpt-5.6-luna",
+      "object": "model",
+      "created": 1783616400,
+      "owned_by": "openai",
+      "type": "openai",
+      "display_name": "GPT 5.6 Luna",
+      "version": "gpt-5.6",
+      "description": "Fast and affordable agentic coding model.",
+      "context_length": 372000,
+      "max_completion_tokens": 128000,
+      "supported_parameters": [
+        "tools"
+      ],
+      "thinking": {
+        "levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      "config": {
+        "override_header": {
+          "user-agent": "codex-tui/0.144.0 (Mac OS 26.5.1; arm64) iTerm.app/3.6.11 (codex-tui; 0.144.0)",
+          "originator": "codex-tui"
+        }
+      }
+    },
+    {
+      "id": "codex-auto-review",
+      "object": "model",
+      "created": 1776902400,
+      "owned_by": "openai",
+      "type": "openai",
+      "display_name": "Codex Auto Review",
+      "version": "Codex Auto Review",
+      "description": "Automatic approval review model for Codex.",
+      "context_length": 272000,
+      "max_completion_tokens": 128000,
+      "supported_parameters": [
+        "tools"
+      ],
+      "thinking": {
+        "levels": [
           "low",
           "medium",
           "high",
           "xhigh"
         ]
       }
-    },
-    {
-      "id": "deepseek-v3.1",
-      "object": "model",
-      "created": 1756339200,
-      "owned_by": "iflow",
-      "type": "iflow",
-      "display_name": "DeepSeek-V3.1-Terminus",
-      "description": "DeepSeek V3.1 Terminus",
-      "thinking": {
-        "levels": [
-          "none",
-          "auto",
-          "minimal",
-          "low",
-          "medium",
-          "high",
-          "xhigh"
-        ]
-      }
-    },
-    {
-      "id": "deepseek-r1",
-      "object": "model",
-      "created": 1737331200,
-      "owned_by": "iflow",
-      "type": "iflow",
-      "display_name": "DeepSeek-R1",
-      "description": "DeepSeek reasoning model R1"
-    },
-    {
-      "id": "deepseek-v3",
-      "object": "model",
-      "created": 1734307200,
-      "owned_by": "iflow",
-      "type": "iflow",
-      "display_name": "DeepSeek-V3-671B",
-      "description": "DeepSeek V3 671B"
-    },
-    {
-      "id": "qwen3-32b",
-      "object": "model",
-      "created": 1747094400,
-      "owned_by": "iflow",
-      "type": "iflow",
-      "display_name": "Qwen3-32B",
-      "description": "Qwen3 32B"
-    },
-    {
-      "id": "qwen3-235b-a22b-thinking-2507",
-      "object": "model",
-      "created": 1753401600,
-      "owned_by": "iflow",
-      "type": "iflow",
-      "display_name": "Qwen3-235B-A22B-Thinking",
-      "description": "Qwen3 235B A22B Thinking (2507)"
-    },
-    {
-      "id": "qwen3-235b-a22b-instruct",
-      "object": "model",
-      "created": 1753401600,
-      "owned_by": "iflow",
-      "type": "iflow",
-      "display_name": "Qwen3-235B-A22B-Instruct",
-      "description": "Qwen3 235B A22B Instruct"
-    },
-    {
-      "id": "qwen3-235b",
-      "object": "model",
-      "created": 1753401600,
-      "owned_by": "iflow",
-      "type": "iflow",
-      "display_name": "Qwen3-235B-A22B",
-      "description": "Qwen3 235B A22B"
-    },
-    {
-      "id": "iflow-rome-30ba3b",
-      "object": "model",
-      "created": 1736899200,
-      "owned_by": "iflow",
-      "type": "iflow",
-      "display_name": "iFlow-ROME",
-      "description": "iFlow Rome 30BA3B model"
     }
   ],
   "kimi": [
@@ -2460,7 +2102,12 @@
         "min": 1024,
         "max": 32000,
         "zero_allowed": true,
-        "dynamic_allowed": true
+        "dynamic_allowed": true,
+        "levels": [
+          "low",
+          "medium",
+          "high"
+        ]
       }
     },
     {
@@ -2470,51 +2117,133 @@
       "owned_by": "moonshot",
       "type": "kimi",
       "display_name": "Kimi K2.5",
-      "description": "Kimi K2.5 - Latest Moonshot AI coding model with improved capabilities",
-      "context_length": 131072,
+      "description": "Kimi K2.5 - Native multimodal agentic model with text, image, and video input; supports thinking and non-thinking modes",
+      "context_length": 262144,
       "max_completion_tokens": 32768,
       "thinking": {
         "min": 1024,
         "max": 32000,
         "zero_allowed": true,
-        "dynamic_allowed": true
+        "dynamic_allowed": true,
+        "levels": [
+          "low",
+          "medium",
+          "high"
+        ]
+      }
+    },
+    {
+      "id": "kimi-k2.6",
+      "object": "model",
+      "created": 1776729600,
+      "owned_by": "moonshot",
+      "type": "kimi",
+      "display_name": "Kimi K2.6",
+      "description": "Kimi K2.6 - Native multimodal agentic model with stronger long-horizon agentic coding, long-context reasoning, and preserved thinking support",
+      "context_length": 262144,
+      "max_completion_tokens": 65536,
+      "thinking": {
+        "min": 1024,
+        "max": 32000,
+        "zero_allowed": true,
+        "dynamic_allowed": true,
+        "levels": [
+          "low",
+          "medium",
+          "high"
+        ]
+      }
+    },
+    {
+      "id": "kimi-k2.7-code",
+      "object": "model",
+      "created": 1780396800,
+      "owned_by": "moonshot",
+      "type": "kimi",
+      "display_name": "Kimi K2.7 Code",
+      "description": "Kimi K2.7 Code - Moonshot AI's latest coding-focused model",
+      "context_length": 262144,
+      "max_completion_tokens": 65536,
+      "thinking": {
+        "min": 1024,
+        "max": 32000,
+        "zero_allowed": false,
+        "dynamic_allowed": true,
+        "levels": [
+          "low",
+          "medium",
+          "high"
+        ]
+      }
+    },
+    {
+      "id": "kimi-k2.7-code-highspeed",
+      "object": "model",
+      "created": 1780396800,
+      "owned_by": "moonshot",
+      "type": "kimi",
+      "display_name": "Kimi K2.7 Code HighSpeed",
+      "description": "Kimi K2.7 Code HighSpeed - Same capabilities as Kimi K2.7 Code with higher output speed (~180 tokens/s)",
+      "context_length": 262144,
+      "max_completion_tokens": 65536,
+      "thinking": {
+        "min": 1024,
+        "max": 32000,
+        "zero_allowed": false,
+        "dynamic_allowed": true,
+        "levels": [
+          "low",
+          "medium",
+          "high"
+        ]
       }
     }
   ],
-  "antigravity": {
-    "claude-opus-4-6-thinking": {
+  "antigravity": [
+    {
+      "id": "claude-opus-4-6-thinking",
+      "object": "model",
+      "owned_by": "antigravity",
+      "type": "antigravity",
+      "display_name": "Claude Opus 4.6 (Thinking)",
+      "name": "claude-opus-4-6-thinking",
+      "description": "Claude Opus 4.6 (Thinking)",
+      "context_length": 200000,
+      "max_completion_tokens": 64000,
       "thinking": {
         "min": 1024,
         "max": 64000,
         "zero_allowed": true,
         "dynamic_allowed": true
-      },
-      "max_completion_tokens": 64000
+      }
     },
-    "claude-sonnet-4-6": {
+    {
+      "id": "claude-sonnet-4-6",
+      "object": "model",
+      "owned_by": "antigravity",
+      "type": "antigravity",
+      "display_name": "Claude Sonnet 4.6 (Thinking)",
+      "name": "claude-sonnet-4-6",
+      "description": "Claude Sonnet 4.6 (Thinking)",
+      "context_length": 200000,
+      "max_completion_tokens": 64000,
       "thinking": {
         "min": 1024,
         "max": 64000,
         "zero_allowed": true,
         "dynamic_allowed": true
-      },
-      "max_completion_tokens": 64000
-    },
-    "gemini-2.5-flash": {
-      "thinking": {
-        "max": 24576,
-        "zero_allowed": true,
-        "dynamic_allowed": true
       }
     },
-    "gemini-2.5-flash-lite": {
-      "thinking": {
-        "max": 24576,
-        "zero_allowed": true,
-        "dynamic_allowed": true
-      }
-    },
-    "gemini-3-flash": {
+    {
+      "id": "gemini-3-flash",
+      "object": "model",
+      "owned_by": "antigravity",
+      "type": "antigravity",
+      "display_name": "Gemini 3 Flash",
+      "name": "gemini-3-flash",
+      "description": "Gemini 3 Flash",
+      "context_length": 1048576,
+      "max_completion_tokens": 65536,
       "thinking": {
         "min": 128,
         "max": 32768,
@@ -2527,29 +2256,36 @@
         ]
       }
     },
-    "gemini-3-pro-high": {
+    {
+      "id": "gemini-3-flash-agent",
+      "object": "model",
+      "owned_by": "antigravity",
+      "type": "antigravity",
+      "display_name": "Gemini 3.5 Flash (High)",
+      "name": "gemini-3-flash-agent",
+      "description": "Gemini 3.5 Flash (High)",
+      "context_length": 1048576,
+      "max_completion_tokens": 65536,
       "thinking": {
         "min": 128,
         "max": 32768,
         "dynamic_allowed": true,
         "levels": [
+          "minimal",
           "low",
+          "medium",
           "high"
         ]
       }
     },
-    "gemini-3-pro-low": {
-      "thinking": {
-        "min": 128,
-        "max": 32768,
-        "dynamic_allowed": true,
-        "levels": [
-          "low",
-          "high"
-        ]
-      }
-    },
-    "gemini-3.1-flash-image": {
+    {
+      "id": "gemini-3.1-flash-image",
+      "object": "model",
+      "owned_by": "antigravity",
+      "type": "antigravity",
+      "display_name": "Gemini 3.1 Flash Image",
+      "name": "gemini-3.1-flash-image",
+      "description": "Gemini 3.1 Flash Image",
       "thinking": {
         "min": 128,
         "max": 32768,
@@ -2560,84 +2296,271 @@
         ]
       }
     },
-    "gemini-3.1-flash-lite-preview": {
+    {
+      "id": "gemini-pro-agent",
+      "object": "model",
+      "owned_by": "antigravity",
+      "type": "antigravity",
+      "display_name": "Gemini 3.1 Pro (High)",
+      "name": "gemini-pro-agent",
+      "description": "Gemini 3.1 Pro (High)",
+      "context_length": 1048576,
+      "max_completion_tokens": 65535,
       "thinking": {
-        "min": 128,
-        "max": 32768,
+        "min": 1,
+        "max": 65535,
+        "dynamic_allowed": true,
+        "levels": [
+          "low",
+          "medium",
+          "high"
+        ]
+      }
+    },
+    {
+      "id": "gemini-3.1-pro-low",
+      "object": "model",
+      "owned_by": "antigravity",
+      "type": "antigravity",
+      "display_name": "Gemini 3.1 Pro (Low)",
+      "name": "gemini-3.1-pro-low",
+      "description": "Gemini 3.1 Pro (Low)",
+      "context_length": 1048576,
+      "max_completion_tokens": 65535,
+      "thinking": {
+        "min": 1,
+        "max": 65535,
+        "dynamic_allowed": true,
+        "levels": [
+          "low",
+          "medium",
+          "high"
+        ]
+      }
+    },
+    {
+      "id": "gpt-oss-120b-medium",
+      "object": "model",
+      "owned_by": "antigravity",
+      "type": "antigravity",
+      "display_name": "GPT-OSS 120B (Medium)",
+      "name": "gpt-oss-120b-medium",
+      "description": "GPT-OSS 120B (Medium)",
+      "context_length": 114000,
+      "max_completion_tokens": 32768
+    },
+    {
+      "id": "gemini-3.1-flash-lite",
+      "object": "model",
+      "owned_by": "antigravity",
+      "type": "antigravity",
+      "display_name": "Gemini 3.1 Flash Lite",
+      "name": "gemini-3.1-flash-lite",
+      "description": "Gemini 3.1 Flash Lite",
+      "context_length": 1048576,
+      "max_completion_tokens": 65535,
+      "thinking": {
+        "min": 1,
+        "max": 65535,
+        "zero_allowed": true,
         "dynamic_allowed": true,
         "levels": [
           "minimal",
+          "low",
+          "medium",
           "high"
         ]
       }
     },
-    "gemini-3.1-pro-high": {
+    {
+      "id": "gemini-3.5-flash-low",
+      "object": "model",
+      "owned_by": "antigravity",
+      "type": "antigravity",
+      "display_name": "Gemini 3.5 Flash (Medium)",
+      "name": "gemini-3.5-flash-low",
+      "description": "Gemini 3.5 Flash (Medium)",
+      "context_length": 1048576,
+      "max_completion_tokens": 65535,
       "thinking": {
-        "min": 128,
-        "max": 32768,
+        "min": 1,
+        "max": 65535,
         "dynamic_allowed": true,
         "levels": [
           "low",
+          "medium",
           "high"
         ]
       }
     },
-    "gemini-3.1-pro-low": {
+    {
+      "id": "gemini-3.5-flash-extra-low",
+      "object": "model",
+      "owned_by": "antigravity",
+      "type": "antigravity",
+      "display_name": "Gemini 3.5 Flash (Low)",
+      "name": "gemini-3.5-flash-extra-low",
+      "description": "Gemini 3.5 Flash (Low)",
+      "context_length": 1048576,
+      "max_completion_tokens": 65535,
       "thinking": {
-        "min": 128,
-        "max": 32768,
+        "min": 1,
+        "max": 65535,
         "dynamic_allowed": true,
         "levels": [
           "low",
+          "medium",
+          "high"
+        ]
+      }
+    }
+  ],
+  "xai": [
+    {
+      "id": "grok-build-0.1",
+      "object": "model",
+      "created": 1779321600,
+      "owned_by": "xai",
+      "type": "xai",
+      "display_name": "Grok Build 0.1",
+      "name": "grok-build-0.1",
+      "description": "Grok Build 0.1 is xAI’s fast coding model trained specifically for agentic software engineering workflows.",
+      "context_length": 256000,
+      "max_completion_tokens": 256000
+    },
+    {
+      "id": "grok-4.5",
+      "object": "model",
+      "created": 1783526400,
+      "owned_by": "xai",
+      "type": "xai",
+      "display_name": "Grok 4.5",
+      "name": "grok-4.5",
+      "description": "SpaceXAI's intelligent coding model for agentic software, engineering, and workflow tasks.",
+      "context_length": 500000,
+      "max_completion_tokens": 65536,
+      "thinking": {
+        "zero_allowed": false,
+        "levels": [
+          "low",
+          "medium",
           "high"
         ]
       }
     },
-    "gpt-oss-120b-medium": {}
-  },
-  "minimax": [
     {
-      "id": "MiniMax-M3",
+      "id": "grok-4.3",
       "object": "model",
-      "created": 1700000000,
-      "owned_by": "minimax",
-      "type": "minimax",
+      "created": 1775606400,
+      "owned_by": "xai",
+      "type": "xai",
+      "display_name": "Grok 4.3",
+      "name": "grok-4.3",
+      "description": "xAI Grok 4.3 model for the Responses API.",
+      "context_length": 1000000,
+      "max_completion_tokens": 65536,
       "thinking": {
+        "zero_allowed": true,
         "levels": [
-          "disabled",
-          "adaptive"
-        ],
-        "default": "adaptive"
+          "none",
+          "low",
+          "medium",
+          "high"
+        ]
       }
     },
     {
-      "id": "MiniMax-M2.7",
+      "id": "grok-4.20-0309-reasoning",
       "object": "model",
-      "created": 1700000000,
-      "owned_by": "minimax",
-      "type": "minimax",
-      "thinking": null
+      "created": 1773014400,
+      "owned_by": "xai",
+      "type": "xai",
+      "display_name": "Grok 4.20 0309 Reasoning",
+      "name": "grok-4.20-0309-reasoning",
+      "description": "xAI Grok 4.20 0309 reasoning model for the Responses API.",
+      "context_length": 2000000,
+      "max_completion_tokens": 65536
     },
     {
-      "id": "MiniMax-M2.7-highspeed",
+      "id": "grok-4.20-0309-non-reasoning",
       "object": "model",
-      "created": 1700000000,
-      "owned_by": "minimax",
-      "type": "minimax"
+      "created": 1773014400,
+      "owned_by": "xai",
+      "type": "xai",
+      "display_name": "Grok 4.20 0309 Non Reasoning",
+      "name": "grok-4.20-0309-non-reasoning",
+      "description": "xAI Grok 4.20 0309 non-reasoning model for the Responses API.",
+      "context_length": 2000000,
+      "max_completion_tokens": 65536
     },
     {
-      "id": "MiniMax-M2.5",
+      "id": "grok-4.20-multi-agent-0309",
       "object": "model",
-      "created": 1700000000,
-      "owned_by": "minimax",
-      "type": "minimax"
+      "created": 1773014400,
+      "owned_by": "xai",
+      "type": "xai",
+      "display_name": "Grok 4.20 Multi Agent 0309",
+      "name": "grok-4.20-multi-agent-0309",
+      "description": "xAI Grok 4.20 multi-agent model for the Responses API.",
+      "context_length": 2000000,
+      "max_completion_tokens": 65536,
+      "thinking": {
+        "levels": [
+          "low",
+          "medium",
+          "high"
+        ]
+      }
     },
     {
-      "id": "MiniMax-M2.5-highspeed",
+      "id": "grok-3-mini",
       "object": "model",
-      "created": 1700000000,
-      "owned_by": "minimax",
-      "type": "minimax"
+      "created": 1740960000,
+      "owned_by": "xai",
+      "type": "xai",
+      "display_name": "Grok 3 Mini",
+      "name": "grok-3-mini",
+      "description": "xAI Grok 3 Mini model for the Responses API.",
+      "context_length": 131072,
+      "max_completion_tokens": 32768,
+      "thinking": {
+        "levels": [
+          "low",
+          "medium",
+          "high"
+        ]
+      }
+    },
+    {
+      "id": "grok-3-mini-fast",
+      "object": "model",
+      "created": 1740960000,
+      "owned_by": "xai",
+      "type": "xai",
+      "display_name": "Grok 3 Mini Fast",
+      "name": "grok-3-mini-fast",
+      "description": "xAI Grok 3 Mini Fast model for the Responses API.",
+      "context_length": 131072,
+      "max_completion_tokens": 32768,
+      "thinking": {
+        "levels": [
+          "low",
+          "medium",
+          "high"
+        ]
+      }
+    },
+    {
+      "id": "grok-composer-2.5-fast",
+      "object": "model",
+      "created": 1740960000,
+      "owned_by": "xai",
+      "type": "xai",
+      "display_name": "Composer 2.5 Fast",
+      "name": "grok-composer-2.5-fast",
+      "description": "xAI Composer 2.5 Fast model for the Responses API.",
+      "context_length": 200000,
+      "max_completion_tokens": 32768
     }
   ]
 }

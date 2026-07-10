@@ -14,11 +14,11 @@ import (
 	"sync"
 
 	"github.com/gin-gonic/gin"
-	. "github.com/router-for-me/CLIProxyAPI/v6/internal/constant"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
-	responsesconverter "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/openai/openai/responses"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
+	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	responsesconverter "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/openai/openai/responses"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -59,6 +59,11 @@ func (h *OpenAIAPIHandler) Models() []map[string]any {
 // It returns a list of available AI models with their capabilities
 // and specifications in OpenAI-compatible format.
 func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
+	if _, ok := c.Request.URL.Query()["client_version"]; ok {
+		c.JSON(http.StatusOK, h.codexClientModelsResponse())
+		return
+	}
+
 	// Get all available models
 	allModels := h.Models()
 
@@ -96,7 +101,7 @@ func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
 // Parameters:
 //   - c: The Gin context containing the HTTP request and response
 func (h *OpenAIAPIHandler) ChatCompletions(c *gin.Context) {
-	rawJSON, err := c.GetRawData()
+	rawJSON, err := handlers.ReadRequestBody(c)
 	// If data retrieval fails, return a 400 Bad Request error.
 	if err != nil {
 		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
@@ -151,7 +156,7 @@ func shouldTreatAsResponsesFormat(rawJSON []byte) bool {
 // Parameters:
 //   - c: The Gin context containing the HTTP request and response
 func (h *OpenAIAPIHandler) Completions(c *gin.Context) {
-	rawJSON, err := c.GetRawData()
+	rawJSON, err := handlers.ReadRequestBody(c)
 	// If data retrieval fails, return a 400 Bad Request error.
 	if err != nil {
 		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
@@ -191,58 +196,58 @@ func convertCompletionsRequestToChatCompletions(rawJSON []byte) []byte {
 	}
 
 	// Create chat completions structure
-	out := `{"model":"","messages":[{"role":"user","content":""}]}`
+	out := []byte(`{"model":"","messages":[{"role":"user","content":""}]}`)
 
 	// Set model
 	if model := root.Get("model"); model.Exists() {
-		out, _ = sjson.Set(out, "model", model.String())
+		out, _ = sjson.SetBytes(out, "model", model.String())
 	}
 
 	// Set the prompt as user message content
-	out, _ = sjson.Set(out, "messages.0.content", prompt)
+	out, _ = sjson.SetBytes(out, "messages.0.content", prompt)
 
 	// Copy other parameters from completions to chat completions
 	if maxTokens := root.Get("max_tokens"); maxTokens.Exists() {
-		out, _ = sjson.Set(out, "max_tokens", maxTokens.Int())
+		out, _ = sjson.SetBytes(out, "max_tokens", maxTokens.Int())
 	}
 
 	if temperature := root.Get("temperature"); temperature.Exists() {
-		out, _ = sjson.Set(out, "temperature", temperature.Float())
+		out, _ = sjson.SetBytes(out, "temperature", temperature.Float())
 	}
 
 	if topP := root.Get("top_p"); topP.Exists() {
-		out, _ = sjson.Set(out, "top_p", topP.Float())
+		out, _ = sjson.SetBytes(out, "top_p", topP.Float())
 	}
 
 	if frequencyPenalty := root.Get("frequency_penalty"); frequencyPenalty.Exists() {
-		out, _ = sjson.Set(out, "frequency_penalty", frequencyPenalty.Float())
+		out, _ = sjson.SetBytes(out, "frequency_penalty", frequencyPenalty.Float())
 	}
 
 	if presencePenalty := root.Get("presence_penalty"); presencePenalty.Exists() {
-		out, _ = sjson.Set(out, "presence_penalty", presencePenalty.Float())
+		out, _ = sjson.SetBytes(out, "presence_penalty", presencePenalty.Float())
 	}
 
 	if stop := root.Get("stop"); stop.Exists() {
-		out, _ = sjson.SetRaw(out, "stop", stop.Raw)
+		out, _ = sjson.SetRawBytes(out, "stop", []byte(stop.Raw))
 	}
 
 	if stream := root.Get("stream"); stream.Exists() {
-		out, _ = sjson.Set(out, "stream", stream.Bool())
+		out, _ = sjson.SetBytes(out, "stream", stream.Bool())
 	}
 
 	if logprobs := root.Get("logprobs"); logprobs.Exists() {
-		out, _ = sjson.Set(out, "logprobs", logprobs.Bool())
+		out, _ = sjson.SetBytes(out, "logprobs", logprobs.Bool())
 	}
 
 	if topLogprobs := root.Get("top_logprobs"); topLogprobs.Exists() {
-		out, _ = sjson.Set(out, "top_logprobs", topLogprobs.Int())
+		out, _ = sjson.SetBytes(out, "top_logprobs", topLogprobs.Int())
 	}
 
 	if echo := root.Get("echo"); echo.Exists() {
-		out, _ = sjson.Set(out, "echo", echo.Bool())
+		out, _ = sjson.SetBytes(out, "echo", echo.Bool())
 	}
 
-	return []byte(out)
+	return out
 }
 
 // convertChatCompletionsResponseToCompletions converts chat completions API response back to completions format.
@@ -257,23 +262,23 @@ func convertChatCompletionsResponseToCompletions(rawJSON []byte) []byte {
 	root := gjson.ParseBytes(rawJSON)
 
 	// Base completions response structure
-	out := `{"id":"","object":"text_completion","created":0,"model":"","choices":[]}`
+	out := []byte(`{"id":"","object":"text_completion","created":0,"model":"","choices":[]}`)
 
 	// Copy basic fields
 	if id := root.Get("id"); id.Exists() {
-		out, _ = sjson.Set(out, "id", id.String())
+		out, _ = sjson.SetBytes(out, "id", id.String())
 	}
 
 	if created := root.Get("created"); created.Exists() {
-		out, _ = sjson.Set(out, "created", created.Int())
+		out, _ = sjson.SetBytes(out, "created", created.Int())
 	}
 
 	if model := root.Get("model"); model.Exists() {
-		out, _ = sjson.Set(out, "model", model.String())
+		out, _ = sjson.SetBytes(out, "model", model.String())
 	}
 
 	if usage := root.Get("usage"); usage.Exists() {
-		out, _ = sjson.SetRaw(out, "usage", usage.Raw)
+		out, _ = sjson.SetRawBytes(out, "usage", []byte(usage.Raw))
 	}
 
 	// Convert choices from chat completions to completions format
@@ -313,10 +318,10 @@ func convertChatCompletionsResponseToCompletions(rawJSON []byte) []byte {
 
 	if len(choices) > 0 {
 		choicesJSON, _ := json.Marshal(choices)
-		out, _ = sjson.SetRaw(out, "choices", string(choicesJSON))
+		out, _ = sjson.SetRawBytes(out, "choices", choicesJSON)
 	}
 
-	return []byte(out)
+	return out
 }
 
 // convertChatCompletionsStreamChunkToCompletions converts a streaming chat completions chunk to completions format.
@@ -357,19 +362,19 @@ func convertChatCompletionsStreamChunkToCompletions(chunkData []byte) []byte {
 	}
 
 	// Base completions stream response structure
-	out := `{"id":"","object":"text_completion","created":0,"model":"","choices":[]}`
+	out := []byte(`{"id":"","object":"text_completion","created":0,"model":"","choices":[]}`)
 
 	// Copy basic fields
 	if id := root.Get("id"); id.Exists() {
-		out, _ = sjson.Set(out, "id", id.String())
+		out, _ = sjson.SetBytes(out, "id", id.String())
 	}
 
 	if created := root.Get("created"); created.Exists() {
-		out, _ = sjson.Set(out, "created", created.Int())
+		out, _ = sjson.SetBytes(out, "created", created.Int())
 	}
 
 	if model := root.Get("model"); model.Exists() {
-		out, _ = sjson.Set(out, "model", model.String())
+		out, _ = sjson.SetBytes(out, "model", model.String())
 	}
 
 	// Convert choices from chat completions delta to completions format
@@ -408,15 +413,15 @@ func convertChatCompletionsStreamChunkToCompletions(chunkData []byte) []byte {
 
 	if len(choices) > 0 {
 		choicesJSON, _ := json.Marshal(choices)
-		out, _ = sjson.SetRaw(out, "choices", string(choicesJSON))
+		out, _ = sjson.SetRawBytes(out, "choices", choicesJSON)
 	}
 
 	// Copy usage if present
 	if usage := root.Get("usage"); usage.Exists() {
-		out, _ = sjson.SetRaw(out, "usage", usage.Raw)
+		out, _ = sjson.SetRawBytes(out, "usage", []byte(usage.Raw))
 	}
 
-	return []byte(out)
+	return out
 }
 
 // handleNonStreamingResponse handles non-streaming chat completion responses

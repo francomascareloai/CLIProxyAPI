@@ -11,8 +11,16 @@ import (
 	"sync"
 	"time"
 
-	misc "github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
+	misc "github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 	log "github.com/sirupsen/logrus"
+)
+
+// OpenAIImageModelType marks models that are callable through OpenAI-compatible image endpoints.
+const OpenAIImageModelType = "openai-image"
+
+const (
+	DefaultClaudeMaxInputTokens  = 200000
+	DefaultClaudeMaxOutputTokens = 64000
 )
 
 // ModelInfo represents information about an available model
@@ -51,15 +59,28 @@ type ModelInfo struct {
 	SupportedInputModalities []string `json:"supportedInputModalities,omitempty"`
 	// SupportedOutputModalities lists supported output modalities (e.g., TEXT, IMAGE)
 	SupportedOutputModalities []string `json:"supportedOutputModalities,omitempty"`
+	// SupportsWebSearch indicates this Antigravity model is listed by
+	// fetchAvailableModels.webSearchModelIds and can execute native googleSearch.
+	SupportsWebSearch bool `json:"supports_web_search,omitempty"`
 
 	// Thinking holds provider-specific reasoning/thinking budget capabilities.
 	// This is optional and currently used for Gemini thinking budget normalization.
 	Thinking *ThinkingSupport `json:"thinking,omitempty"`
 
+	// Config holds model-specific runtime overrides loaded from models.json.
+	Config *ModelConfig `json:"config,omitempty"`
+
 	// UserDefined indicates this model was defined through config file's models[]
 	// array (e.g., openai-compatibility.*.models[], *-api-key.models[]).
 	// UserDefined models have thinking configuration passed through without validation.
 	UserDefined bool `json:"-"`
+}
+
+// ModelConfig holds optional runtime overrides for a model definition.
+type ModelConfig struct {
+	// OverrideHeader forces upstream request headers when non-empty.
+	// Keys are header names (e.g. "user-agent"); values replace any existing header.
+	OverrideHeader map[string]string `json:"override_header,omitempty"`
 }
 
 type availableModelsCacheEntry struct {
@@ -71,16 +92,16 @@ type availableModelsCacheEntry struct {
 // Values are interpreted in provider-native token units.
 type ThinkingSupport struct {
 	// Min is the minimum allowed thinking budget (inclusive).
-	Min int `json:"min,omitempty"`
+	Min int `json:"min,omitempty" yaml:"min,omitempty"`
 	// Max is the maximum allowed thinking budget (inclusive).
-	Max int `json:"max,omitempty"`
+	Max int `json:"max,omitempty" yaml:"max,omitempty"`
 	// ZeroAllowed indicates whether 0 is a valid value (to disable thinking).
-	ZeroAllowed bool `json:"zero_allowed,omitempty"`
+	ZeroAllowed bool `json:"zero_allowed,omitempty" yaml:"zero-allowed,omitempty"`
 	// DynamicAllowed indicates whether -1 is a valid value (dynamic thinking budget).
-	DynamicAllowed bool `json:"dynamic_allowed,omitempty"`
+	DynamicAllowed bool `json:"dynamic_allowed,omitempty" yaml:"dynamic-allowed,omitempty"`
 	// Levels defines discrete reasoning effort levels (e.g., "low", "medium", "high").
 	// When set, the model uses level-based reasoning instead of token budgets.
-	Levels []string `json:"levels,omitempty"`
+	Levels []string `json:"levels,omitempty" yaml:"levels,omitempty"`
 }
 
 // ModelRegistration tracks a model's availability
@@ -176,6 +197,27 @@ func LookupModelInfo(modelID string, provider ...string) *ModelInfo {
 	return cloneModelInfo(LookupStaticModelInfo(modelID))
 }
 
+// ModelOverrideHeaders returns models.json config.override_header for the model, if any.
+// The returned map is a defensive copy and may be empty but never nil when overrides exist.
+func ModelOverrideHeaders(modelID string, provider ...string) map[string]string {
+	info := LookupModelInfo(modelID, provider...)
+	if info == nil || info.Config == nil || len(info.Config.OverrideHeader) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(info.Config.OverrideHeader))
+	for key, value := range info.Config.OverrideHeader {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		out[key] = value
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // SetHook sets an optional hook for observing model registration changes.
 func (r *ModelRegistry) SetHook(hook ModelRegistryHook) {
 	if r == nil {
@@ -187,6 +229,7 @@ func (r *ModelRegistry) SetHook(hook ModelRegistryHook) {
 }
 
 const defaultModelRegistryHookTimeout = 5 * time.Second
+const modelQuotaExceededWindow = 5 * time.Minute
 
 func (r *ModelRegistry) triggerModelsRegistered(provider, clientID string, models []*ModelInfo) {
 	hook := r.hook
@@ -388,6 +431,9 @@ func (r *ModelRegistry) RegisterClient(clientID, clientProvider string, models [
 				reg.InfoByProvider[provider] = cloneModelInfo(model)
 			}
 			reg.LastUpdated = now
+			// Re-registering an existing client/model binding starts a fresh registry
+			// snapshot for that binding. Cooldown and suspension are transient
+			// scheduling state and must not survive this reconciliation step.
 			if reg.QuotaExceededClients != nil {
 				delete(reg.QuotaExceededClients, clientID)
 			}
@@ -432,7 +478,7 @@ func (r *ModelRegistry) RegisterClient(clientID, clientProvider string, models [
 	r.invalidateAvailableModelsCacheLocked()
 	r.triggerModelsRegistered(provider, clientID, models)
 	if len(added) == 0 && len(removed) == 0 && !providerChanged {
-		// Only metadata (e.g., display name) changed; skip separator when no log output.
+		// Only metadata (e.g., display name) changed; keep no-op re-registration quiet.
 		return
 	}
 
@@ -539,6 +585,16 @@ func cloneModelInfo(model *ModelInfo) *ModelInfo {
 			copyThinking.Levels = append([]string(nil), model.Thinking.Levels...)
 		}
 		copyModel.Thinking = &copyThinking
+	}
+	if model.Config != nil {
+		copyConfig := *model.Config
+		if len(model.Config.OverrideHeader) > 0 {
+			copyConfig.OverrideHeader = make(map[string]string, len(model.Config.OverrideHeader))
+			for key, value := range model.Config.OverrideHeader {
+				copyConfig.OverrideHeader[key] = value
+			}
+		}
+		copyModel.Config = &copyConfig
 	}
 	return &copyModel
 }
@@ -781,7 +837,6 @@ func (r *ModelRegistry) GetAvailableModels(handlerType string) []map[string]any 
 
 func (r *ModelRegistry) buildAvailableModelsLocked(handlerType string, now time.Time) ([]map[string]any, time.Time) {
 	models := make([]map[string]any, 0, len(r.models))
-	quotaExpiredDuration := 5 * time.Minute
 	var expiresAt time.Time
 
 	for _, registration := range r.models {
@@ -792,7 +847,7 @@ func (r *ModelRegistry) buildAvailableModelsLocked(handlerType string, now time.
 			if quotaTime == nil {
 				continue
 			}
-			recoveryAt := quotaTime.Add(quotaExpiredDuration)
+			recoveryAt := quotaTime.Add(modelQuotaExceededWindow)
 			if now.Before(recoveryAt) {
 				expiredClients++
 				if expiresAt.IsZero() || recoveryAt.Before(expiresAt) {
@@ -927,7 +982,6 @@ func (r *ModelRegistry) GetAvailableModelsByProvider(provider string) []*ModelIn
 		return nil
 	}
 
-	quotaExpiredDuration := 5 * time.Minute
 	now := time.Now()
 	result := make([]*ModelInfo, 0, len(providerModels))
 
@@ -949,7 +1003,7 @@ func (r *ModelRegistry) GetAvailableModelsByProvider(provider string) []*ModelIn
 					if p, okProvider := r.clientProviders[clientID]; !okProvider || p != provider {
 						continue
 					}
-					if quotaTime != nil && now.Sub(*quotaTime) < quotaExpiredDuration {
+					if quotaTime != nil && now.Sub(*quotaTime) < modelQuotaExceededWindow {
 						expiredClients++
 					}
 				}
@@ -1003,12 +1057,11 @@ func (r *ModelRegistry) GetModelCount(modelID string) int {
 
 	if registration, exists := r.models[modelID]; exists {
 		now := time.Now()
-		quotaExpiredDuration := 5 * time.Minute
 
 		// Count clients that have exceeded quota but haven't recovered yet
 		expiredClients := 0
 		for _, quotaTime := range registration.QuotaExceededClients {
-			if quotaTime != nil && now.Sub(*quotaTime) < quotaExpiredDuration {
+			if quotaTime != nil && now.Sub(*quotaTime) < modelQuotaExceededWindow {
 				expiredClients++
 			}
 		}
@@ -1149,14 +1202,24 @@ func (r *ModelRegistry) convertModelToMap(model *ModelInfo, handlerType string) 
 			"owned_by": model.OwnedBy,
 		}
 		if model.Created > 0 {
-			result["created_at"] = model.Created
+			result["created_at"] = time.Unix(model.Created, 0).UTC().Format(time.RFC3339)
 		}
-		if model.Type != "" {
-			result["type"] = "model"
-		}
+		result["type"] = "model"
 		if model.DisplayName != "" {
 			result["display_name"] = model.DisplayName
+		} else {
+			result["display_name"] = model.ID
 		}
+		maxInput := model.ContextLength
+		if maxInput <= 0 {
+			maxInput = DefaultClaudeMaxInputTokens
+		}
+		maxOutput := model.MaxCompletionTokens
+		if maxOutput <= 0 {
+			maxOutput = DefaultClaudeMaxOutputTokens
+		}
+		result["max_input_tokens"] = maxInput
+		result["max_tokens"] = maxOutput
 		return result
 
 	case "gemini":
@@ -1217,12 +1280,11 @@ func (r *ModelRegistry) CleanupExpiredQuotas() {
 	defer r.mutex.Unlock()
 
 	now := time.Now()
-	quotaExpiredDuration := 5 * time.Minute
 	invalidated := false
 
 	for modelID, registration := range r.models {
 		for clientID, quotaTime := range registration.QuotaExceededClients {
-			if quotaTime != nil && now.Sub(*quotaTime) >= quotaExpiredDuration {
+			if quotaTime != nil && now.Sub(*quotaTime) >= modelQuotaExceededWindow {
 				delete(registration.QuotaExceededClients, clientID)
 				invalidated = true
 				log.Debugf("Cleaned up expired quota tracking for model %s, client %s", modelID, clientID)

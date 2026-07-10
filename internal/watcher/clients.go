@@ -8,17 +8,17 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/watcher/diff"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/watcher/synthesizer"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/diff"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/synthesizer"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -72,51 +72,68 @@ func (w *Watcher) reloadClients(rescanAuth bool, affectedOAuthProviders []string
 	}
 
 	if rescanAuth {
-		w.clientsMutex.Lock()
+		w.authRescanMu.Lock()
+		cacheAuthContents := log.IsLevelEnabled(log.DebugLevel)
+		newAuthHashes := make(map[string]string)
+		var newAuthContents map[string]*coreauth.Auth
+		if cacheAuthContents {
+			newAuthContents = make(map[string]*coreauth.Auth)
+		}
+		newFileAuthsByPath := make(map[string]map[string]*coreauth.Auth)
 
-		w.lastAuthHashes = make(map[string]string)
-		w.lastAuthStats = make(map[string]authFileStat)
-		w.lastAuthContents = make(map[string]*coreauth.Auth)
-		w.fileAuthsByPath = make(map[string]map[string]*coreauth.Auth)
+		w.clientsMutex.RLock()
+		parser := w.pluginAuthParser
+		w.clientsMutex.RUnlock()
+
 		if resolvedAuthDir, errResolveAuthDir := util.ResolveAuthDir(cfg.AuthDir); errResolveAuthDir != nil {
 			log.Errorf("failed to resolve auth directory for hash cache: %v", errResolveAuthDir)
 		} else if resolvedAuthDir != "" {
-			_ = filepath.Walk(resolvedAuthDir, func(path string, info fs.FileInfo, err error) error {
-				if err != nil {
-					return nil
-				}
-				if !info.IsDir() && isWatchedAuthJSONPath(path) {
-					normalizedPath := w.normalizeAuthPath(path)
-					w.lastAuthStats[normalizedPath] = authFileStat{
-						size:        info.Size(),
-						modTimeUnix: info.ModTime().UnixNano(),
-						seenAtUnix:  0,
+			entries, errReadDir := os.ReadDir(resolvedAuthDir)
+			if errReadDir != nil {
+				log.Errorf("failed to read auth directory for hash cache: %v", errReadDir)
+			} else {
+				for _, entry := range entries {
+					if entry == nil || entry.IsDir() {
+						continue
 					}
-					if data, errReadFile := os.ReadFile(path); errReadFile == nil && len(data) > 0 {
+					name := entry.Name()
+					if !strings.HasSuffix(strings.ToLower(name), ".json") {
+						continue
+					}
+					fullPath := filepath.Join(resolvedAuthDir, name)
+					if data, errReadFile := os.ReadFile(fullPath); errReadFile == nil && len(data) > 0 {
 						sum := sha256.Sum256(data)
-						w.lastAuthHashes[normalizedPath] = hex.EncodeToString(sum[:])
-						// Parse and cache auth content for future diff comparisons
-						var auth coreauth.Auth
-						if errParse := json.Unmarshal(data, &auth); errParse == nil {
-							w.lastAuthContents[normalizedPath] = &auth
+						normalizedPath := w.normalizeAuthPath(fullPath)
+						newAuthHashes[normalizedPath] = hex.EncodeToString(sum[:])
+						// Parse and cache auth content for future diff comparisons (debug only).
+						if cacheAuthContents {
+							var auth coreauth.Auth
+							if errParse := json.Unmarshal(data, &auth); errParse == nil {
+								newAuthContents[normalizedPath] = &auth
+							}
 						}
 						ctx := &synthesizer.SynthesisContext{
-							Config:      cfg,
-							AuthDir:     resolvedAuthDir,
-							Now:         time.Now(),
-							IDGenerator: synthesizer.NewStableIDGenerator(),
+							Config:           cfg,
+							AuthDir:          resolvedAuthDir,
+							Now:              time.Now(),
+							IDGenerator:      synthesizer.NewStableIDGenerator(),
+							PluginAuthParser: parser,
 						}
-						if generated := synthesizer.SynthesizeAuthFile(ctx, path, data); len(generated) > 0 {
+						if generated := synthesizer.SynthesizeAuthFile(ctx, fullPath, data); len(generated) > 0 {
 							if pathAuths := authSliceToMap(generated); len(pathAuths) > 0 {
-								w.fileAuthsByPath[normalizedPath] = pathAuths
+								newFileAuthsByPath[normalizedPath] = authIDSet(pathAuths)
 							}
 						}
 					}
 				}
-				return nil
-			})
+			}
 		}
+		w.clientsMutex.Lock()
+		w.lastAuthHashes = newAuthHashes
+		w.lastAuthContents = newAuthContents
+		w.fileAuthsByPath = newFileAuthsByPath
 		w.clientsMutex.Unlock()
+		w.authRescanMu.Unlock()
 	}
 
 	totalNewClients := authFileCount + geminiAPIKeyCount + vertexCompatAPIKeyCount + claudeAPIKeyCount + codexAPIKeyCount + openAICompatCount
@@ -127,6 +144,7 @@ func (w *Watcher) reloadClients(rescanAuth bool, affectedOAuthProviders []string
 	}
 
 	w.refreshAuthState(forceAuthRefresh)
+	redisqueue.NotifyUsageRefresh()
 
 	log.Infof("full client load complete - %d clients (%d auth files + %d Gemini API keys + %d Vertex API keys + %d Claude API keys + %d Codex keys + %d OpenAI-compat)",
 		totalNewClients,
@@ -140,34 +158,13 @@ func (w *Watcher) reloadClients(rescanAuth bool, affectedOAuthProviders []string
 }
 
 func (w *Watcher) addOrUpdateClient(path string) {
-	info, errStat := os.Stat(path)
-	if errStat != nil {
-		log.Errorf("failed to stat auth file %s: %v", filepath.Base(path), errStat)
-		return
-	}
-	if info.IsDir() {
-		return
-	}
-	normalized := w.normalizeAuthPath(path)
-	currentStat := authFileStat{
-		size:        info.Size(),
-		modTimeUnix: info.ModTime().UnixNano(),
-	}
-	nowUnix := time.Now().UnixNano()
+	w.authRescanMu.Lock()
+	defer w.authRescanMu.Unlock()
 
-	w.clientsMutex.RLock()
-	if prevStat, ok := w.lastAuthStats[normalized]; ok {
-		if prevStat.size == currentStat.size && prevStat.modTimeUnix == currentStat.modTimeUnix {
-			elapsed := nowUnix - prevStat.seenAtUnix
-			if prevStat.seenAtUnix > 0 && elapsed >= 0 && elapsed <= authStatDedupWindow.Nanoseconds() {
-				w.clientsMutex.RUnlock()
-				log.Debugf("auth file unchanged (mtime/size recent match), skipping reload: %s", filepath.Base(path))
-				return
-			}
-		}
-	}
-	w.clientsMutex.RUnlock()
+	w.addOrUpdateClientLocked(path)
+}
 
+func (w *Watcher) addOrUpdateClientLocked(path string) {
 	data, errRead := os.ReadFile(path)
 	if errRead != nil {
 		log.Errorf("failed to read auth file %s: %v", filepath.Base(path), errRead)
@@ -180,6 +177,7 @@ func (w *Watcher) addOrUpdateClient(path string) {
 
 	sum := sha256.Sum256(data)
 	curHash := hex.EncodeToString(sum[:])
+	normalized := w.normalizeAuthPath(path)
 
 	// Parse new auth content for diff comparison
 	var newAuth coreauth.Auth
@@ -188,21 +186,20 @@ func (w *Watcher) addOrUpdateClient(path string) {
 		return
 	}
 
+	cacheAuthContents := log.IsLevelEnabled(log.DebugLevel)
 	w.clientsMutex.Lock()
 	if w.config == nil {
 		log.Error("config is nil, cannot add or update client")
 		w.clientsMutex.Unlock()
 		return
 	}
+	cfg := w.config
+	authDir := w.authDir
+	parser := w.pluginAuthParser
 	if w.fileAuthsByPath == nil {
 		w.fileAuthsByPath = make(map[string]map[string]*coreauth.Auth)
 	}
 	if prev, ok := w.lastAuthHashes[normalized]; ok && prev == curHash {
-		if w.lastAuthStats == nil {
-			w.lastAuthStats = make(map[string]authFileStat)
-		}
-		currentStat.seenAtUnix = nowUnix
-		w.lastAuthStats[normalized] = currentStat
 		log.Debugf("auth file unchanged (hash match), skipping reload: %s", filepath.Base(path))
 		w.clientsMutex.Unlock()
 		return
@@ -210,46 +207,53 @@ func (w *Watcher) addOrUpdateClient(path string) {
 
 	// Get old auth for diff comparison
 	var oldAuth *coreauth.Auth
-	if w.lastAuthContents != nil {
-		oldAuth = w.lastAuthContents[normalized]
-	}
-
-	// Compute and log field changes
-	if changes := diff.BuildAuthChangeDetails(oldAuth, &newAuth); len(changes) > 0 {
-		log.Debugf("auth field changes for %s:", filepath.Base(path))
-		for _, c := range changes {
-			log.Debugf("  %s", c)
+	if cacheAuthContents && w.lastAuthContents != nil {
+		if cached := w.lastAuthContents[normalized]; cached != nil {
+			oldAuth = cached.Clone()
 		}
 	}
 
 	// Update caches
+	if w.lastAuthHashes == nil {
+		w.lastAuthHashes = make(map[string]string)
+	}
 	w.lastAuthHashes[normalized] = curHash
-	if w.lastAuthStats == nil {
-		w.lastAuthStats = make(map[string]authFileStat)
+	if cacheAuthContents {
+		if w.lastAuthContents == nil {
+			w.lastAuthContents = make(map[string]*coreauth.Auth)
+		}
+		w.lastAuthContents[normalized] = &newAuth
 	}
-	currentStat.seenAtUnix = nowUnix
-	w.lastAuthStats[normalized] = currentStat
-	if w.lastAuthContents == nil {
-		w.lastAuthContents = make(map[string]*coreauth.Auth)
-	}
-	w.lastAuthContents[normalized] = &newAuth
 
 	oldByID := make(map[string]*coreauth.Auth, len(w.fileAuthsByPath[normalized]))
 	for id, a := range w.fileAuthsByPath[normalized] {
 		oldByID[id] = a
 	}
+	w.clientsMutex.Unlock()
+
+	// Compute and log field changes
+	if cacheAuthContents {
+		if changes := diff.BuildAuthChangeDetails(oldAuth, &newAuth); len(changes) > 0 {
+			log.Debugf("auth field changes for %s:", filepath.Base(path))
+			for _, c := range changes {
+				log.Debugf("  %s", c)
+			}
+		}
+	}
 
 	// Build synthesized auth entries for this single file only.
 	sctx := &synthesizer.SynthesisContext{
-		Config:      w.config,
-		AuthDir:     w.authDir,
-		Now:         time.Now(),
-		IDGenerator: synthesizer.NewStableIDGenerator(),
+		Config:           cfg,
+		AuthDir:          authDir,
+		Now:              time.Now(),
+		IDGenerator:      synthesizer.NewStableIDGenerator(),
+		PluginAuthParser: parser,
 	}
 	generated := synthesizer.SynthesizeAuthFile(sctx, path, data)
 	newByID := authSliceToMap(generated)
+	w.clientsMutex.Lock()
 	if len(newByID) > 0 {
-		w.fileAuthsByPath[normalized] = newByID
+		w.fileAuthsByPath[normalized] = authIDSet(newByID)
 	} else {
 		delete(w.fileAuthsByPath, normalized)
 	}
@@ -258,9 +262,17 @@ func (w *Watcher) addOrUpdateClient(path string) {
 
 	w.persistAuthAsync(fmt.Sprintf("Sync auth %s", filepath.Base(path)), path)
 	w.dispatchAuthUpdates(updates)
+	redisqueue.NotifyUsageRefresh()
 }
 
 func (w *Watcher) removeClient(path string) {
+	w.authRescanMu.Lock()
+	defer w.authRescanMu.Unlock()
+
+	w.removeClientLocked(path)
+}
+
+func (w *Watcher) removeClientLocked(path string) {
 	normalized := w.normalizeAuthPath(path)
 	w.clientsMutex.Lock()
 	oldByID := make(map[string]*coreauth.Auth, len(w.fileAuthsByPath[normalized]))
@@ -268,7 +280,6 @@ func (w *Watcher) removeClient(path string) {
 		oldByID[id] = a
 	}
 	delete(w.lastAuthHashes, normalized)
-	delete(w.lastAuthStats, normalized)
 	delete(w.lastAuthContents, normalized)
 	delete(w.fileAuthsByPath, normalized)
 
@@ -277,6 +288,7 @@ func (w *Watcher) removeClient(path string) {
 
 	w.persistAuthAsync(fmt.Sprintf("Remove auth %s", filepath.Base(path)), path)
 	w.dispatchAuthUpdates(updates)
+	redisqueue.NotifyUsageRefresh()
 }
 
 func (w *Watcher) computePerPathUpdatesLocked(oldByID, newByID map[string]*coreauth.Auth) []AuthUpdate {
@@ -317,6 +329,14 @@ func authSliceToMap(auths []*coreauth.Auth) map[string]*coreauth.Auth {
 	return byID
 }
 
+func authIDSet(auths map[string]*coreauth.Auth) map[string]*coreauth.Auth {
+	set := make(map[string]*coreauth.Auth, len(auths))
+	for id := range auths {
+		set[id] = nil
+	}
+	return set
+}
+
 func (w *Watcher) loadFileClients(cfg *config.Config) int {
 	authFileCount := 0
 	successfulAuthCount := 0
@@ -330,23 +350,25 @@ func (w *Watcher) loadFileClients(cfg *config.Config) int {
 		return 0
 	}
 
-	errWalk := filepath.Walk(authDir, func(path string, info fs.FileInfo, err error) error {
-		if err != nil {
-			log.Debugf("error accessing path %s: %v", path, err)
-			return err
+	entries, errReadDir := os.ReadDir(authDir)
+	if errReadDir != nil {
+		log.Errorf("error reading auth directory: %v", errReadDir)
+		return 0
+	}
+	for _, entry := range entries {
+		if entry == nil || entry.IsDir() {
+			continue
 		}
-		if !info.IsDir() && isWatchedAuthJSONPath(path) {
-			authFileCount++
-			log.Debugf("processing auth file %d: %s", authFileCount, filepath.Base(path))
-			if data, errCreate := os.ReadFile(path); errCreate == nil && len(data) > 0 {
-				successfulAuthCount++
-			}
+		name := entry.Name()
+		if !strings.HasSuffix(strings.ToLower(name), ".json") {
+			continue
 		}
-		return nil
-	})
-
-	if errWalk != nil {
-		log.Errorf("error walking auth directory: %v", errWalk)
+		authFileCount++
+		log.Debugf("processing auth file %d: %s", authFileCount, name)
+		fullPath := filepath.Join(authDir, name)
+		if data, errReadFile := os.ReadFile(fullPath); errReadFile == nil && len(data) > 0 {
+			successfulAuthCount++
+		}
 	}
 	log.Debugf("auth directory scan complete - found %d .json files, %d readable", authFileCount, successfulAuthCount)
 	return authFileCount
@@ -362,6 +384,9 @@ func BuildAPIKeyClients(cfg *config.Config) (int, int, int, int, int) {
 	if len(cfg.GeminiKey) > 0 {
 		geminiAPIKeyCount += len(cfg.GeminiKey)
 	}
+	if len(cfg.InteractionsKey) > 0 {
+		geminiAPIKeyCount += len(cfg.InteractionsKey)
+	}
 	if len(cfg.VertexCompatAPIKey) > 0 {
 		vertexCompatAPIKeyCount += len(cfg.VertexCompatAPIKey)
 	}
@@ -373,6 +398,9 @@ func BuildAPIKeyClients(cfg *config.Config) (int, int, int, int, int) {
 	}
 	if len(cfg.OpenAICompatibility) > 0 {
 		for _, compatConfig := range cfg.OpenAICompatibility {
+			if compatConfig.Disabled {
+				continue
+			}
 			openAICompatCount += len(compatConfig.APIKeyEntries)
 		}
 	}
@@ -390,6 +418,104 @@ func (w *Watcher) persistConfigAsync() {
 			log.Errorf("failed to persist config change: %v", err)
 		}
 	}()
+}
+
+func (w *Watcher) persistAuthAsync(message string, paths ...string) {
+	if w == nil || w.storePersister == nil {
+		return
+	}
+	filtered := make([]string, 0, len(paths))
+	for _, p := range paths {
+		if trimmed := strings.TrimSpace(p); trimmed != "" {
+			filtered = append(filtered, trimmed)
+		}
+	}
+	if len(filtered) == 0 {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := w.storePersister.PersistAuthFiles(ctx, message, filtered...); err != nil {
+			log.Errorf("failed to persist auth changes: %v", err)
+		}
+	}()
+}
+
+func (w *Watcher) stopServerUpdateTimer() {
+	w.serverUpdateMu.Lock()
+	defer w.serverUpdateMu.Unlock()
+	if w.serverUpdateTimer != nil {
+		w.serverUpdateTimer.Stop()
+		w.serverUpdateTimer = nil
+	}
+	w.serverUpdatePend = false
+}
+
+func (w *Watcher) triggerServerUpdate(cfg *config.Config) {
+	if w == nil || w.reloadCallback == nil || cfg == nil {
+		return
+	}
+	if w.stopped.Load() {
+		return
+	}
+
+	now := time.Now()
+
+	w.serverUpdateMu.Lock()
+	if w.serverUpdateLast.IsZero() || now.Sub(w.serverUpdateLast) >= serverUpdateDebounce {
+		w.serverUpdateLast = now
+		if w.serverUpdateTimer != nil {
+			w.serverUpdateTimer.Stop()
+			w.serverUpdateTimer = nil
+		}
+		w.serverUpdatePend = false
+		w.serverUpdateMu.Unlock()
+		w.reloadCallback(cfg)
+		return
+	}
+
+	if w.serverUpdatePend {
+		w.serverUpdateMu.Unlock()
+		return
+	}
+
+	delay := serverUpdateDebounce - now.Sub(w.serverUpdateLast)
+	if delay < 10*time.Millisecond {
+		delay = 10 * time.Millisecond
+	}
+	w.serverUpdatePend = true
+	if w.serverUpdateTimer != nil {
+		w.serverUpdateTimer.Stop()
+		w.serverUpdateTimer = nil
+	}
+	var timer *time.Timer
+	timer = time.AfterFunc(delay, func() {
+		if w.stopped.Load() {
+			return
+		}
+		w.clientsMutex.RLock()
+		latestCfg := w.config
+		w.clientsMutex.RUnlock()
+
+		w.serverUpdateMu.Lock()
+		if w.serverUpdateTimer != timer || !w.serverUpdatePend {
+			w.serverUpdateMu.Unlock()
+			return
+		}
+		w.serverUpdateTimer = nil
+		w.serverUpdatePend = false
+		if latestCfg == nil || w.reloadCallback == nil || w.stopped.Load() {
+			w.serverUpdateMu.Unlock()
+			return
+		}
+
+		w.serverUpdateLast = time.Now()
+		w.serverUpdateMu.Unlock()
+		w.reloadCallback(latestCfg)
+	})
+	w.serverUpdateTimer = timer
+	w.serverUpdateMu.Unlock()
 }
 
 func (w *Watcher) scheduleAuthReload() {
@@ -495,100 +621,3 @@ func (w *Watcher) authReloadWindows() (time.Duration, time.Duration) {
 	return time.Duration(debounceMS) * time.Millisecond, time.Duration(maxCoalesceMS) * time.Millisecond
 }
 
-func (w *Watcher) persistAuthAsync(message string, paths ...string) {
-	if w == nil || w.storePersister == nil {
-		return
-	}
-	filtered := make([]string, 0, len(paths))
-	for _, p := range paths {
-		if trimmed := strings.TrimSpace(p); trimmed != "" {
-			filtered = append(filtered, trimmed)
-		}
-	}
-	if len(filtered) == 0 {
-		return
-	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := w.storePersister.PersistAuthFiles(ctx, message, filtered...); err != nil {
-			log.Errorf("failed to persist auth changes: %v", err)
-		}
-	}()
-}
-
-func (w *Watcher) stopServerUpdateTimer() {
-	w.serverUpdateMu.Lock()
-	defer w.serverUpdateMu.Unlock()
-	if w.serverUpdateTimer != nil {
-		w.serverUpdateTimer.Stop()
-		w.serverUpdateTimer = nil
-	}
-	w.serverUpdatePend = false
-}
-
-func (w *Watcher) triggerServerUpdate(cfg *config.Config) {
-	if w == nil || w.reloadCallback == nil || cfg == nil {
-		return
-	}
-	if w.stopped.Load() {
-		return
-	}
-
-	now := time.Now()
-
-	w.serverUpdateMu.Lock()
-	if w.serverUpdateLast.IsZero() || now.Sub(w.serverUpdateLast) >= serverUpdateDebounce {
-		w.serverUpdateLast = now
-		if w.serverUpdateTimer != nil {
-			w.serverUpdateTimer.Stop()
-			w.serverUpdateTimer = nil
-		}
-		w.serverUpdatePend = false
-		w.serverUpdateMu.Unlock()
-		w.reloadCallback(cfg)
-		return
-	}
-
-	if w.serverUpdatePend {
-		w.serverUpdateMu.Unlock()
-		return
-	}
-
-	delay := serverUpdateDebounce - now.Sub(w.serverUpdateLast)
-	if delay < 10*time.Millisecond {
-		delay = 10 * time.Millisecond
-	}
-	w.serverUpdatePend = true
-	if w.serverUpdateTimer != nil {
-		w.serverUpdateTimer.Stop()
-		w.serverUpdateTimer = nil
-	}
-	var timer *time.Timer
-	timer = time.AfterFunc(delay, func() {
-		if w.stopped.Load() {
-			return
-		}
-		w.clientsMutex.RLock()
-		latestCfg := w.config
-		w.clientsMutex.RUnlock()
-
-		w.serverUpdateMu.Lock()
-		if w.serverUpdateTimer != timer || !w.serverUpdatePend {
-			w.serverUpdateMu.Unlock()
-			return
-		}
-		w.serverUpdateTimer = nil
-		w.serverUpdatePend = false
-		if latestCfg == nil || w.reloadCallback == nil || w.stopped.Load() {
-			w.serverUpdateMu.Unlock()
-			return
-		}
-
-		w.serverUpdateLast = time.Now()
-		w.serverUpdateMu.Unlock()
-		w.reloadCallback(latestCfg)
-	})
-	w.serverUpdateTimer = timer
-	w.serverUpdateMu.Unlock()
-}

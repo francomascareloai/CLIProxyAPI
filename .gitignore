@@ -12,6 +12,8 @@ logs/*
 conv/*
 temp/*
 refs/*
+plugins/*
+examples/plugin/bin/*
 
 # Local run artifacts
 cliproxyapi.run.log
@@ -30,6 +32,7 @@ static/*
 
 # Authentication data
 auths/*
+/auths
 !auths/.gitkeep
 
 # Documentation
@@ -40,15 +43,18 @@ GEMINI.md
 
 # Tooling metadata
 .vscode/*
+.worktrees/
 .codex/*
 .claude/*
+.claude
 .gemini/*
 .serena/*
 .agent/*
-.agents/*
+.agents
 .agents/*
 .opencode/*
 .idea/*
+.beads/*
 .bmad/*
 _bmad/*
 _bmad-output/*
@@ -57,3 +63,4 @@ MEMORY/*
 # macOS
 .DS_Store
 ._*
+.gocache/

@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"time"
 
-	internalusage "github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	internalusage "github.com/router-for-me/CLIProxyAPI/v7/internal/usage"
 )
 
 type usageImportPayload struct {

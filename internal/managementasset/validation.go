@@ -10,7 +10,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/usage"
 	"github.com/tdewolff/parse/v2"
 	jsparser "github.com/tdewolff/parse/v2/js"
 	"golang.org/x/net/html"

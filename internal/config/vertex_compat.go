@@ -20,9 +20,9 @@ type VertexCompatKey struct {
 	// Prefix optionally namespaces model aliases for this credential (e.g., "teamA/vertex-pro").
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
 
-	// BaseURL is the base URL for the Vertex-compatible API endpoint.
+	// BaseURL optionally overrides the Vertex-compatible API endpoint.
 	// The executor will append "/v1/publishers/google/models/{model}:action" to this.
-	// Example: "https://zenmux.ai/api" becomes "https://zenmux.ai/api/v1/publishers/google/models/..."
+	// When empty, requests fall back to the default Vertex API base URL.
 	BaseURL string `yaml:"base-url,omitempty" json:"base-url,omitempty"`
 
 	// ProxyURL optionally overrides the global proxy for this API key.
@@ -50,10 +50,14 @@ type VertexCompatModel struct {
 
 	// Alias is the model name alias that clients will use to reference this model.
 	Alias string `yaml:"alias" json:"alias"`
+
+	// ForceMapping rewrites upstream response model fields back to Alias.
+	ForceMapping bool `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
 }
 
-func (m VertexCompatModel) GetName() string  { return m.Name }
-func (m VertexCompatModel) GetAlias() string { return m.Alias }
+func (m VertexCompatModel) GetName() string       { return m.Name }
+func (m VertexCompatModel) GetAlias() string      { return m.Alias }
+func (m VertexCompatModel) GetForceMapping() bool { return m.ForceMapping }
 
 // SanitizeVertexCompatKeys deduplicates and normalizes Vertex-compatible API key credentials.
 func (cfg *Config) SanitizeVertexCompatKeys() {
@@ -71,10 +75,6 @@ func (cfg *Config) SanitizeVertexCompatKeys() {
 		}
 		entry.Prefix = normalizeModelPrefix(entry.Prefix)
 		entry.BaseURL = strings.TrimSpace(entry.BaseURL)
-		if entry.BaseURL == "" {
-			// BaseURL is required for Vertex API key entries
-			continue
-		}
 		entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
 		entry.Headers = NormalizeHeaders(entry.Headers)
 		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)

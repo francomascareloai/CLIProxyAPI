@@ -3,33 +3,31 @@
 package registry
 
 import (
-	"sort"
 	"strings"
 )
 
-// AntigravityModelConfig captures static antigravity model overrides, including
-// Thinking budget limits and provider max completion tokens.
-type AntigravityModelConfig struct {
-	Thinking            *ThinkingSupport `json:"thinking,omitempty"`
-	MaxCompletionTokens int              `json:"max_completion_tokens,omitempty"`
-}
+const (
+	codexBuiltinImage15ModelID      = "gpt-image-1.5"
+	codexBuiltinImageModelID        = "gpt-image-2"
+	xaiBuiltinImageModelID          = "grok-imagine-image"
+	xaiBuiltinImageQualityModelID   = "grok-imagine-image-quality"
+	xaiBuiltinVideoModelID          = "grok-imagine-video"
+	xaiBuiltinVideo15PreviewModelID = "grok-imagine-video-1.5-preview"
+)
 
 // staticModelsJSON mirrors the top-level structure of models.json.
 type staticModelsJSON struct {
-	Claude      []*ModelInfo                       `json:"claude"`
-	Gemini      []*ModelInfo                       `json:"gemini"`
-	Vertex      []*ModelInfo                       `json:"vertex"`
-	GeminiCLI   []*ModelInfo                       `json:"gemini-cli"`
-	AIStudio    []*ModelInfo                       `json:"aistudio"`
-	CodexFree   []*ModelInfo                       `json:"codex-free"`
-	CodexTeam   []*ModelInfo                       `json:"codex-team"`
-	CodexPlus   []*ModelInfo                       `json:"codex-plus"`
-	CodexPro    []*ModelInfo                       `json:"codex-pro"`
-	Qwen        []*ModelInfo                       `json:"qwen"`
-	IFlow       []*ModelInfo                       `json:"iflow"`
-	Kimi        []*ModelInfo                       `json:"kimi"`
-	MiniMax     []*ModelInfo                       `json:"minimax"`
-	Antigravity map[string]*AntigravityModelConfig `json:"antigravity"`
+	Claude      []*ModelInfo `json:"claude"`
+	Gemini      []*ModelInfo `json:"gemini"`
+	Vertex      []*ModelInfo `json:"vertex"`
+	AIStudio    []*ModelInfo `json:"aistudio"`
+	CodexFree   []*ModelInfo `json:"codex-free"`
+	CodexTeam   []*ModelInfo `json:"codex-team"`
+	CodexPlus   []*ModelInfo `json:"codex-plus"`
+	CodexPro    []*ModelInfo `json:"codex-pro"`
+	Kimi        []*ModelInfo `json:"kimi"`
+	Antigravity []*ModelInfo `json:"antigravity"`
+	XAI         []*ModelInfo `json:"xai"`
 }
 
 // GetClaudeModels returns the standard Claude model definitions.
@@ -47,11 +45,6 @@ func GetGeminiVertexModels() []*ModelInfo {
 	return cloneModelInfos(getModels().Vertex)
 }
 
-// GetGeminiCLIModels returns Gemini model definitions for the Gemini CLI.
-func GetGeminiCLIModels() []*ModelInfo {
-	return cloneModelInfos(getModels().GeminiCLI)
-}
-
 // GetAIStudioModels returns model definitions for AI Studio.
 func GetAIStudioModels() []*ModelInfo {
 	return cloneModelInfos(getModels().AIStudio)
@@ -59,32 +52,22 @@ func GetAIStudioModels() []*ModelInfo {
 
 // GetCodexFreeModels returns model definitions for the Codex free plan tier.
 func GetCodexFreeModels() []*ModelInfo {
-	return cloneModelInfos(getModels().CodexFree)
+	return WithCodexBuiltins(cloneModelInfos(getModels().CodexFree))
 }
 
 // GetCodexTeamModels returns model definitions for the Codex team plan tier.
 func GetCodexTeamModels() []*ModelInfo {
-	return cloneModelInfos(getModels().CodexTeam)
+	return WithCodexBuiltins(cloneModelInfos(getModels().CodexTeam))
 }
 
 // GetCodexPlusModels returns model definitions for the Codex plus plan tier.
 func GetCodexPlusModels() []*ModelInfo {
-	return cloneModelInfos(getModels().CodexPlus)
+	return WithCodexBuiltins(cloneModelInfos(getModels().CodexPlus))
 }
 
 // GetCodexProModels returns model definitions for the Codex pro plan tier.
 func GetCodexProModels() []*ModelInfo {
-	return cloneModelInfos(getModels().CodexPro)
-}
-
-// GetQwenModels returns the standard Qwen model definitions.
-func GetQwenModels() []*ModelInfo {
-	return cloneModelInfos(getModels().Qwen)
-}
-
-// GetIFlowModels returns the standard iFlow model definitions.
-func GetIFlowModels() []*ModelInfo {
-	return cloneModelInfos(getModels().IFlow)
+	return WithCodexBuiltins(cloneModelInfos(getModels().CodexPro))
 }
 
 // GetKimiModels returns the standard Kimi (Moonshot AI) model definitions.
@@ -92,38 +75,182 @@ func GetKimiModels() []*ModelInfo {
 	return cloneModelInfos(getModels().Kimi)
 }
 
-// GetMiniMaxModels returns the standard MiniMax model definitions.
-func GetMiniMaxModels() []*ModelInfo {
-	return cloneModelInfos(getModels().MiniMax)
+// GetAntigravityModels returns the standard Antigravity model definitions.
+func GetAntigravityModels() []*ModelInfo {
+	return cloneModelInfos(getModels().Antigravity)
 }
 
-// GetAntigravityModelConfig returns static configuration for antigravity models.
-// Keys use upstream model names returned by the Antigravity models endpoint.
-func GetAntigravityModelConfig() map[string]*AntigravityModelConfig {
-	data := getModels()
-	if len(data.Antigravity) == 0 {
-		return nil
+// AntigravityWebSearchModelFor returns the Antigravity model that should run a
+// native web search request for modelID.
+func AntigravityWebSearchModelFor(modelID string) string {
+	modelID = normalizeAntigravityCapabilityModelID(modelID)
+	if modelID == "" {
+		return ""
 	}
-	out := make(map[string]*AntigravityModelConfig, len(data.Antigravity))
-	for k, v := range data.Antigravity {
-		out[k] = cloneAntigravityModelConfig(v)
-	}
-	return out
-}
-
-func cloneAntigravityModelConfig(cfg *AntigravityModelConfig) *AntigravityModelConfig {
-	if cfg == nil {
-		return nil
-	}
-	copyConfig := *cfg
-	if cfg.Thinking != nil {
-		copyThinking := *cfg.Thinking
-		if len(cfg.Thinking.Levels) > 0 {
-			copyThinking.Levels = append([]string(nil), cfg.Thinking.Levels...)
+	for _, model := range GetGlobalRegistry().GetAvailableModelsByProvider("antigravity") {
+		if model == nil {
+			continue
 		}
-		copyConfig.Thinking = &copyThinking
+		currentModelID := normalizeAntigravityCapabilityModelID(model.ID)
+		if currentModelID == "" {
+			continue
+		}
+		if currentModelID == modelID {
+			if model.SupportsWebSearch {
+				return currentModelID
+			}
+			return ""
+		}
 	}
-	return &copyConfig
+	return ""
+}
+
+// GetXAIModels returns the standard xAI Grok model definitions.
+func GetXAIModels() []*ModelInfo {
+	return WithXAIBuiltins(cloneModelInfos(getModels().XAI))
+}
+
+// WithCodexBuiltins injects hard-coded Codex-only model definitions that should
+// not depend on remote models.json updates. Built-ins replace any matching IDs
+// already present in the provided slice.
+func WithCodexBuiltins(models []*ModelInfo) []*ModelInfo {
+	return upsertModelInfos(models, codexBuiltinImage15ModelInfo(), codexBuiltinImageModelInfo())
+}
+
+// WithXAIBuiltins injects hard-coded xAI image/video model definitions that should
+// not depend on remote models.json updates.
+func WithXAIBuiltins(models []*ModelInfo) []*ModelInfo {
+	return upsertModelInfos(models, xaiBuiltinImageModelInfo(), xaiBuiltinImageQualityModelInfo(), xaiBuiltinVideoModelInfo(), xaiBuiltinVideo15PreviewModelInfo())
+}
+
+func normalizeAntigravityCapabilityModelID(modelID string) string {
+	modelID = strings.ToLower(strings.TrimSpace(modelID))
+	if open := strings.LastIndex(modelID, "("); open >= 0 && strings.HasSuffix(modelID, ")") {
+		modelID = strings.TrimSpace(modelID[:open])
+	}
+	return modelID
+}
+
+func codexBuiltinImage15ModelInfo() *ModelInfo {
+	return &ModelInfo{
+		ID:          codexBuiltinImage15ModelID,
+		Object:      "model",
+		Created:     1704067200, // 2024-01-01
+		OwnedBy:     "openai",
+		Type:        "openai",
+		DisplayName: "GPT Image 1.5",
+		Version:     codexBuiltinImage15ModelID,
+	}
+}
+
+func codexBuiltinImageModelInfo() *ModelInfo {
+	return &ModelInfo{
+		ID:          codexBuiltinImageModelID,
+		Object:      "model",
+		Created:     1704067200, // 2024-01-01
+		OwnedBy:     "openai",
+		Type:        "openai",
+		DisplayName: "GPT Image 2",
+		Version:     codexBuiltinImageModelID,
+	}
+}
+
+func xaiBuiltinImageModelInfo() *ModelInfo {
+	return &ModelInfo{
+		ID:          xaiBuiltinImageModelID,
+		Object:      "model",
+		Created:     1735689600, // 2025-01-01
+		OwnedBy:     "xai",
+		Type:        "xai",
+		DisplayName: "Grok Imagine Image",
+		Name:        xaiBuiltinImageModelID,
+		Description: "xAI Grok image generation model.",
+	}
+}
+
+func xaiBuiltinImageQualityModelInfo() *ModelInfo {
+	return &ModelInfo{
+		ID:          xaiBuiltinImageQualityModelID,
+		Object:      "model",
+		Created:     1735689600, // 2025-01-01
+		OwnedBy:     "xai",
+		Type:        "xai",
+		DisplayName: "Grok Imagine Image Quality",
+		Name:        xaiBuiltinImageQualityModelID,
+		Description: "xAI Grok higher-fidelity image generation model.",
+	}
+}
+
+func xaiBuiltinVideoModelInfo() *ModelInfo {
+	return &ModelInfo{
+		ID:          xaiBuiltinVideoModelID,
+		Object:      "model",
+		Created:     1735689600, // 2025-01-01
+		OwnedBy:     "xai",
+		Type:        "xai",
+		DisplayName: "Grok Imagine Video",
+		Name:        xaiBuiltinVideoModelID,
+		Description: "xAI Grok video generation model.",
+	}
+}
+
+func xaiBuiltinVideo15PreviewModelInfo() *ModelInfo {
+	return &ModelInfo{
+		ID:          xaiBuiltinVideo15PreviewModelID,
+		Object:      "model",
+		Created:     1735689600, // 2025-01-01
+		OwnedBy:     "xai",
+		Type:        "xai",
+		DisplayName: "Grok Imagine Video 1.5 Preview",
+		Name:        xaiBuiltinVideo15PreviewModelID,
+		Description: "xAI Grok preview video generation model.",
+	}
+}
+
+func upsertModelInfos(models []*ModelInfo, extras ...*ModelInfo) []*ModelInfo {
+	if len(extras) == 0 {
+		return models
+	}
+
+	extraIDs := make(map[string]struct{}, len(extras))
+	extraList := make([]*ModelInfo, 0, len(extras))
+	for _, extra := range extras {
+		if extra == nil {
+			continue
+		}
+		id := strings.TrimSpace(extra.ID)
+		if id == "" {
+			continue
+		}
+		key := strings.ToLower(id)
+		if _, exists := extraIDs[key]; exists {
+			continue
+		}
+		extraIDs[key] = struct{}{}
+		extraList = append(extraList, cloneModelInfo(extra))
+	}
+
+	if len(extraList) == 0 {
+		return models
+	}
+
+	filtered := make([]*ModelInfo, 0, len(models)+len(extraList))
+	for _, model := range models {
+		if model == nil {
+			continue
+		}
+		id := strings.TrimSpace(model.ID)
+		if id == "" {
+			continue
+		}
+		if _, exists := extraIDs[strings.ToLower(id)]; exists {
+			continue
+		}
+		filtered = append(filtered, model)
+	}
+
+	filtered = append(filtered, extraList...)
+	return filtered
 }
 
 // cloneModelInfos returns a shallow copy of the slice with each element deep-cloned.
@@ -145,13 +272,11 @@ func cloneModelInfos(models []*ModelInfo) []*ModelInfo {
 //   - claude
 //   - gemini
 //   - vertex
-//   - gemini-cli
 //   - aistudio
 //   - codex
-//   - qwen
-//   - iflow
 //   - kimi
-//   - antigravity (returns static overrides only)
+//   - antigravity
+//   - xai
 func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 	key := strings.ToLower(strings.TrimSpace(channel))
 	switch key {
@@ -161,43 +286,16 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetGeminiModels()
 	case "vertex":
 		return GetGeminiVertexModels()
-	case "gemini-cli":
-		return GetGeminiCLIModels()
 	case "aistudio":
 		return GetAIStudioModels()
 	case "codex":
 		return GetCodexProModels()
-	case "qwen":
-		return GetQwenModels()
-	case "iflow":
-		return GetIFlowModels()
 	case "kimi":
 		return GetKimiModels()
-	case "minimax":
-		return GetMiniMaxModels()
 	case "antigravity":
-		cfg := GetAntigravityModelConfig()
-		if len(cfg) == 0 {
-			return nil
-		}
-		models := make([]*ModelInfo, 0, len(cfg))
-		for modelID, entry := range cfg {
-			if modelID == "" || entry == nil {
-				continue
-			}
-			models = append(models, &ModelInfo{
-				ID:                  modelID,
-				Object:              "model",
-				OwnedBy:             "antigravity",
-				Type:                "antigravity",
-				Thinking:            entry.Thinking,
-				MaxCompletionTokens: entry.MaxCompletionTokens,
-			})
-		}
-		sort.Slice(models, func(i, j int) bool {
-			return strings.ToLower(models[i].ID) < strings.ToLower(models[j].ID)
-		})
-		return models
+		return GetAntigravityModels()
+	case "xai", "x-ai", "grok":
+		return GetXAIModels()
 	default:
 		return nil
 	}
@@ -215,27 +313,17 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 		data.Claude,
 		data.Gemini,
 		data.Vertex,
-		data.GeminiCLI,
 		data.AIStudio,
 		data.CodexPro,
-		data.Qwen,
-		data.IFlow,
 		data.Kimi,
+		data.Antigravity,
+		data.XAI,
 	}
 	for _, models := range allModels {
 		for _, m := range models {
 			if m != nil && m.ID == modelID {
 				return cloneModelInfo(m)
 			}
-		}
-	}
-
-	// Check Antigravity static config
-	if cfg := cloneAntigravityModelConfig(data.Antigravity[modelID]); cfg != nil {
-		return &ModelInfo{
-			ID:                  modelID,
-			Thinking:            cfg.Thinking,
-			MaxCompletionTokens: cfg.MaxCompletionTokens,
 		}
 	}
 

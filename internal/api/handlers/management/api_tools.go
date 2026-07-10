@@ -5,33 +5,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/geminicli"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/proxyutil"
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/net/proxy"
-	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/google"
 )
 
 const defaultAPICallTimeout = 60 * time.Second
-
-const (
-	geminiOAuthClientID     = "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"
-	geminiOAuthClientSecret = "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"
-)
-
-var geminiOAuthScopes = []string{
-	"https://www.googleapis.com/auth/cloud-platform",
-	"https://www.googleapis.com/auth/userinfo.email",
-	"https://www.googleapis.com/auth/userinfo.profile",
-}
 
 const (
 	antigravityOAuthClientID     = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
@@ -240,11 +226,6 @@ func tokenValueForAuth(auth *coreauth.Auth) string {
 			return v
 		}
 	}
-	if shared := geminicli.ResolveSharedCredential(auth.Runtime); shared != nil {
-		if v := tokenValueFromMetadata(shared.MetadataSnapshot()); v != "" {
-			return v
-		}
-	}
 	return ""
 }
 
@@ -253,87 +234,12 @@ func (h *Handler) resolveTokenForAuth(ctx context.Context, auth *coreauth.Auth) 
 		return "", nil
 	}
 
-	provider := strings.ToLower(strings.TrimSpace(auth.Provider))
-	if provider == "gemini-cli" {
-		token, errToken := h.refreshGeminiOAuthAccessToken(ctx, auth)
-		return token, errToken
-	}
-	if provider == "antigravity" {
+	if strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") {
 		token, errToken := h.refreshAntigravityOAuthAccessToken(ctx, auth)
 		return token, errToken
 	}
 
 	return tokenValueForAuth(auth), nil
-}
-
-func (h *Handler) refreshGeminiOAuthAccessToken(ctx context.Context, auth *coreauth.Auth) (string, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if auth == nil {
-		return "", nil
-	}
-
-	metadata, updater := geminiOAuthMetadata(auth)
-	if len(metadata) == 0 {
-		return "", fmt.Errorf("gemini oauth metadata missing")
-	}
-
-	base := make(map[string]any)
-	if tokenRaw, ok := metadata["token"].(map[string]any); ok && tokenRaw != nil {
-		base = cloneMap(tokenRaw)
-	}
-
-	var token oauth2.Token
-	if len(base) > 0 {
-		if raw, errMarshal := json.Marshal(base); errMarshal == nil {
-			_ = json.Unmarshal(raw, &token)
-		}
-	}
-
-	if token.AccessToken == "" {
-		token.AccessToken = stringValue(metadata, "access_token")
-	}
-	if token.RefreshToken == "" {
-		token.RefreshToken = stringValue(metadata, "refresh_token")
-	}
-	if token.TokenType == "" {
-		token.TokenType = stringValue(metadata, "token_type")
-	}
-	if token.Expiry.IsZero() {
-		if expiry := stringValue(metadata, "expiry"); expiry != "" {
-			if ts, errParseTime := time.Parse(time.RFC3339, expiry); errParseTime == nil {
-				token.Expiry = ts
-			}
-		}
-	}
-
-	conf := &oauth2.Config{
-		ClientID:     geminiOAuthClientID,
-		ClientSecret: geminiOAuthClientSecret,
-		Scopes:       geminiOAuthScopes,
-		Endpoint:     google.Endpoint,
-	}
-
-	ctxToken := ctx
-	httpClient := &http.Client{
-		Timeout:   defaultAPICallTimeout,
-		Transport: h.apiCallTransport(auth),
-	}
-	ctxToken = context.WithValue(ctxToken, oauth2.HTTPClient, httpClient)
-
-	src := conf.TokenSource(ctxToken, &token)
-	currentToken, errToken := src.Token()
-	if errToken != nil {
-		return "", errToken
-	}
-
-	merged := buildOAuthTokenMap(base, currentToken)
-	fields := buildOAuthTokenFields(currentToken, merged)
-	if updater != nil {
-		updater(fields)
-	}
-	return strings.TrimSpace(currentToken.AccessToken), nil
 }
 
 func (h *Handler) refreshAntigravityOAuthAccessToken(ctx context.Context, auth *coreauth.Auth) (string, error) {
@@ -491,24 +397,6 @@ func int64Value(raw any) int64 {
 	return 0
 }
 
-func geminiOAuthMetadata(auth *coreauth.Auth) (map[string]any, func(map[string]any)) {
-	if auth == nil {
-		return nil, nil
-	}
-	if shared := geminicli.ResolveSharedCredential(auth.Runtime); shared != nil {
-		snapshot := shared.MetadataSnapshot()
-		return snapshot, func(fields map[string]any) { shared.MergeMetadata(fields) }
-	}
-	return auth.Metadata, func(fields map[string]any) {
-		if auth.Metadata == nil {
-			auth.Metadata = make(map[string]any)
-		}
-		for k, v := range fields {
-			auth.Metadata[k] = v
-		}
-	}
-}
-
 func stringValue(metadata map[string]any, key string) string {
 	if len(metadata) == 0 || key == "" {
 		return ""
@@ -517,56 +405,6 @@ func stringValue(metadata map[string]any, key string) string {
 		return strings.TrimSpace(v)
 	}
 	return ""
-}
-
-func cloneMap(in map[string]any) map[string]any {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]any, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
-	return out
-}
-
-func buildOAuthTokenMap(base map[string]any, tok *oauth2.Token) map[string]any {
-	merged := cloneMap(base)
-	if merged == nil {
-		merged = make(map[string]any)
-	}
-	if tok == nil {
-		return merged
-	}
-	if raw, errMarshal := json.Marshal(tok); errMarshal == nil {
-		var tokenMap map[string]any
-		if errUnmarshal := json.Unmarshal(raw, &tokenMap); errUnmarshal == nil {
-			for k, v := range tokenMap {
-				merged[k] = v
-			}
-		}
-	}
-	return merged
-}
-
-func buildOAuthTokenFields(tok *oauth2.Token, merged map[string]any) map[string]any {
-	fields := make(map[string]any, 5)
-	if tok != nil && tok.AccessToken != "" {
-		fields["access_token"] = tok.AccessToken
-	}
-	if tok != nil && tok.TokenType != "" {
-		fields["token_type"] = tok.TokenType
-	}
-	if tok != nil && tok.RefreshToken != "" {
-		fields["refresh_token"] = tok.RefreshToken
-	}
-	if tok != nil && !tok.Expiry.IsZero() {
-		fields["expiry"] = tok.Expiry.Format(time.RFC3339)
-	}
-	if len(merged) > 0 {
-		fields["token"] = cloneMap(merged)
-	}
-	return fields
 }
 
 func tokenValueFromMetadata(metadata map[string]any) string {
@@ -637,6 +475,11 @@ func (h *Handler) apiCallTransport(auth *coreauth.Auth) http.RoundTripper {
 		if proxyStr := strings.TrimSpace(auth.ProxyURL); proxyStr != "" {
 			proxyCandidates = append(proxyCandidates, proxyStr)
 		}
+		if h != nil && h.cfg != nil {
+			if proxyStr := strings.TrimSpace(proxyURLFromAPIKeyConfig(h.cfg, auth)); proxyStr != "" {
+				proxyCandidates = append(proxyCandidates, proxyStr)
+			}
+		}
 	}
 	if h != nil && h.cfg != nil {
 		if proxyStr := strings.TrimSpace(h.cfg.ProxyURL); proxyStr != "" {
@@ -659,46 +502,135 @@ func (h *Handler) apiCallTransport(auth *coreauth.Auth) http.RoundTripper {
 	return clone
 }
 
-func buildProxyTransport(proxyStr string) *http.Transport {
-	proxyStr = strings.TrimSpace(proxyStr)
-	if proxyStr == "" {
+type apiKeyConfigEntry interface {
+	GetAPIKey() string
+	GetBaseURL() string
+}
+
+func resolveAPIKeyConfig[T apiKeyConfigEntry](entries []T, auth *coreauth.Auth) *T {
+	if auth == nil || len(entries) == 0 {
 		return nil
 	}
-
-	proxyURL, errParse := url.Parse(proxyStr)
-	if errParse != nil {
-		log.WithError(errParse).Debug("parse proxy URL failed")
-		return nil
+	attrKey, attrBase := "", ""
+	if auth.Attributes != nil {
+		attrKey = strings.TrimSpace(auth.Attributes["api_key"])
+		attrBase = strings.TrimSpace(auth.Attributes["base_url"])
 	}
-	if proxyURL.Scheme == "" || proxyURL.Host == "" {
-		log.Debug("proxy URL missing scheme/host")
-		return nil
-	}
-
-	if proxyURL.Scheme == "socks5" {
-		var proxyAuth *proxy.Auth
-		if proxyURL.User != nil {
-			username := proxyURL.User.Username()
-			password, _ := proxyURL.User.Password()
-			proxyAuth = &proxy.Auth{User: username, Password: password}
+	for i := range entries {
+		entry := &entries[i]
+		cfgKey := strings.TrimSpace((*entry).GetAPIKey())
+		cfgBase := strings.TrimSpace((*entry).GetBaseURL())
+		if attrKey != "" && attrBase != "" {
+			if strings.EqualFold(cfgKey, attrKey) && strings.EqualFold(cfgBase, attrBase) {
+				return entry
+			}
+			continue
 		}
-		dialer, errSOCKS5 := proxy.SOCKS5("tcp", proxyURL.Host, proxyAuth, proxy.Direct)
-		if errSOCKS5 != nil {
-			log.WithError(errSOCKS5).Debug("create SOCKS5 dialer failed")
-			return nil
+		if attrKey != "" && strings.EqualFold(cfgKey, attrKey) {
+			if cfgBase == "" || strings.EqualFold(cfgBase, attrBase) {
+				return entry
+			}
 		}
-		return &http.Transport{
-			Proxy: nil,
-			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				return dialer.Dial(network, addr)
-			},
+		if attrKey == "" && attrBase != "" && strings.EqualFold(cfgBase, attrBase) {
+			return entry
 		}
 	}
-
-	if proxyURL.Scheme == "http" || proxyURL.Scheme == "https" {
-		return &http.Transport{Proxy: http.ProxyURL(proxyURL)}
+	if attrKey != "" {
+		for i := range entries {
+			entry := &entries[i]
+			if strings.EqualFold(strings.TrimSpace((*entry).GetAPIKey()), attrKey) {
+				return entry
+			}
+		}
 	}
-
-	log.Debugf("unsupported proxy scheme: %s", proxyURL.Scheme)
 	return nil
+}
+
+func proxyURLFromAPIKeyConfig(cfg *config.Config, auth *coreauth.Auth) string {
+	if cfg == nil || auth == nil {
+		return ""
+	}
+	authKind, authAccount := auth.AccountInfo()
+	if !strings.EqualFold(strings.TrimSpace(authKind), "api_key") {
+		return ""
+	}
+
+	attrs := auth.Attributes
+	compatName := ""
+	providerKey := ""
+	if len(attrs) > 0 {
+		compatName = strings.TrimSpace(attrs["compat_name"])
+		providerKey = strings.TrimSpace(attrs["provider_key"])
+	}
+	if compatName != "" || strings.EqualFold(strings.TrimSpace(auth.Provider), "openai-compatibility") {
+		return resolveOpenAICompatAPIKeyProxyURL(cfg, auth, strings.TrimSpace(authAccount), providerKey, compatName)
+	}
+
+	switch strings.ToLower(strings.TrimSpace(auth.Provider)) {
+	case "gemini":
+		if entry := resolveAPIKeyConfig(cfg.GeminiKey, auth); entry != nil {
+			return strings.TrimSpace(entry.ProxyURL)
+		}
+	case "gemini-interactions":
+		if entry := resolveAPIKeyConfig(cfg.InteractionsKey, auth); entry != nil {
+			return strings.TrimSpace(entry.ProxyURL)
+		}
+	case "claude":
+		if entry := resolveAPIKeyConfig(cfg.ClaudeKey, auth); entry != nil {
+			return strings.TrimSpace(entry.ProxyURL)
+		}
+	case "codex":
+		if entry := resolveAPIKeyConfig(cfg.CodexKey, auth); entry != nil {
+			return strings.TrimSpace(entry.ProxyURL)
+		}
+	}
+	return ""
+}
+
+func resolveOpenAICompatAPIKeyProxyURL(cfg *config.Config, auth *coreauth.Auth, apiKey, providerKey, compatName string) string {
+	if cfg == nil || auth == nil {
+		return ""
+	}
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return ""
+	}
+	candidates := make([]string, 0, 3)
+	if v := strings.TrimSpace(compatName); v != "" {
+		candidates = append(candidates, v)
+	}
+	if v := strings.TrimSpace(providerKey); v != "" {
+		candidates = append(candidates, v)
+	}
+	if v := strings.TrimSpace(auth.Provider); v != "" {
+		candidates = append(candidates, v)
+	}
+
+	for i := range cfg.OpenAICompatibility {
+		compat := &cfg.OpenAICompatibility[i]
+		if compat.Disabled {
+			continue
+		}
+		for _, candidate := range candidates {
+			if candidate != "" && strings.EqualFold(strings.TrimSpace(candidate), compat.Name) {
+				for j := range compat.APIKeyEntries {
+					entry := &compat.APIKeyEntries[j]
+					if strings.EqualFold(strings.TrimSpace(entry.APIKey), apiKey) {
+						return strings.TrimSpace(entry.ProxyURL)
+					}
+				}
+				return ""
+			}
+		}
+	}
+	return ""
+}
+
+func buildProxyTransport(proxyStr string) *http.Transport {
+	transport, _, errBuild := proxyutil.BuildHTTPTransport(proxyStr)
+	if errBuild != nil {
+		log.WithError(errBuild).Debug("build proxy transport failed")
+		return nil
+	}
+	return transport
 }

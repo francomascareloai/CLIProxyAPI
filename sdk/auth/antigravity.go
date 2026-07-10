@@ -8,12 +8,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/antigravity"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/browser"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/antigravity"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/browser"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -98,6 +98,9 @@ func (AntigravityAuthenticator) Login(ctx context.Context, cfg *config.Config, o
 		defer manualPromptTimer.Stop()
 	}
 
+	var manualInputCh <-chan string
+	var manualInputErrCh <-chan error
+
 waitForCallback:
 	for {
 		select {
@@ -115,10 +118,11 @@ waitForCallback:
 				break waitForCallback
 			default:
 			}
-			input, errPrompt := opts.Prompt("Paste the antigravity callback URL (or press Enter to keep waiting): ")
-			if errPrompt != nil {
-				return nil, errPrompt
-			}
+			manualInputCh, manualInputErrCh = misc.AsyncPrompt(opts.Prompt, "Paste the antigravity callback URL (or press Enter to keep waiting): ")
+			continue
+		case input := <-manualInputCh:
+			manualInputCh = nil
+			manualInputErrCh = nil
 			parsed, errParse := misc.ParseOAuthCallback(input)
 			if errParse != nil {
 				return nil, errParse
@@ -132,6 +136,8 @@ waitForCallback:
 				Error: parsed.Error,
 			}
 			break waitForCallback
+		case errManual := <-manualInputErrCh:
+			return nil, errManual
 		case <-timeoutTimer.C:
 			return nil, fmt.Errorf("antigravity: authentication timed out")
 		}
@@ -166,16 +172,19 @@ waitForCallback:
 		return nil, fmt.Errorf("antigravity: empty email returned from user info")
 	}
 
-	// Fetch project ID via loadCodeAssist (same approach as Gemini CLI)
+	// Fetch project ID via loadCodeAssist.
 	projectID := ""
 	if accessToken != "" {
 		fetchedProjectID, errProject := authSvc.FetchProjectID(ctx, accessToken)
 		if errProject != nil {
-			log.Warnf("antigravity: failed to fetch project ID: %v", errProject)
+			return nil, fmt.Errorf("antigravity: failed to fetch project ID: %w", errProject)
 		} else {
 			projectID = fetchedProjectID
-			log.Infof("antigravity: obtained project ID %s", projectID)
+			log.Infof("antigravity: obtained project ID %s", util.HideAPIKey(projectID))
 		}
+	}
+	if strings.TrimSpace(projectID) == "" {
+		return nil, fmt.Errorf("antigravity: project ID discovery returned empty project")
 	}
 
 	now := time.Now()
@@ -202,7 +211,7 @@ waitForCallback:
 
 	fmt.Println("Antigravity authentication successful")
 	if projectID != "" {
-		fmt.Printf("Using GCP project: %s\n", projectID)
+		fmt.Printf("Using GCP project: %s\n", util.HideAPIKey(projectID))
 	}
 	return &coreauth.Auth{
 		ID:       fileName,

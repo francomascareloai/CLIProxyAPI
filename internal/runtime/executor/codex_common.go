@@ -2,14 +2,15 @@ package executor
 
 import (
 	"context"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"net/http"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -50,8 +51,8 @@ func (e *CodexExecutor) prepareCodexRequest(auth *cliproxyauth.Auth, req cliprox
 		return codexPreparedRequest{}, err
 	}
 
-	requestedModel := payloadRequestedModel(opts, req.Model)
-	body = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, originalTranslated, requestedModel)
+	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
+	body = helps.ApplyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, originalTranslated, requestedModel, "")
 	body = normalizeCodexServiceTier(body)
 	body, _ = sjson.SetBytes(body, "model", baseModel)
 	if stream {
@@ -86,7 +87,7 @@ func (e *CodexExecutor) prepareCodexRequest(auth *cliproxyauth.Auth, req cliprox
 }
 
 func recordCodexUpstreamRequest(ctx context.Context, cfg *config.Config, url string, method string, headers http.Header, body []byte, authID, authLabel, authType, authValue string) {
-	recordAPIRequest(ctx, cfg, upstreamRequestLog{
+	helps.RecordAPIRequest(ctx, cfg, helps.UpstreamRequestLog{
 		URL:       url,
 		Method:    method,
 		Headers:   headers,
