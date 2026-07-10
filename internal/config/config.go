@@ -220,7 +220,6 @@ type Config struct {
 	// Claude Code -> CLIProxy -> GPT-5.x setups.
 	ClaudeOpenAIPriority bool `yaml:"claude-openai-priority" json:"claude-openai-priority"`
 
-	legacyMigrationPending bool `yaml:"-" json:"-"`
 }
 
 // PluginsConfig holds dynamic plugin system settings.

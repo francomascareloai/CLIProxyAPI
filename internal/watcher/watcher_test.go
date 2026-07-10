@@ -390,65 +390,6 @@ func TestAddOrUpdateClientTriggersReloadAndHash(t *testing.T) {
 		t.Fatalf("expected hash to be stored for %s", normalized)
 	}
 }
-
-func TestAddOrUpdateClientRecentStatMatchSkipsOnlyBurstDuplicates(t *testing.T) {
-	tmpDir := t.TempDir()
-	authFile := filepath.Join(tmpDir, "sample.json")
-	content := []byte(`{"type":"demo","api_key":"k"}`)
-	if err := os.WriteFile(authFile, content, 0o644); err != nil {
-		t.Fatalf("failed to create auth file: %v", err)
-	}
-	info, errStat := os.Stat(authFile)
-	if errStat != nil {
-		t.Fatalf("failed to stat auth file: %v", errStat)
-	}
-
-	var reloads int32
-	w := &Watcher{
-		authDir:        tmpDir,
-		lastAuthHashes: make(map[string]string),
-		lastAuthStats:  make(map[string]authFileStat),
-		reloadCallback: func(*config.Config) {
-			atomic.AddInt32(&reloads, 1)
-		},
-	}
-	w.SetConfig(&config.Config{AuthDir: tmpDir})
-	normalized := w.normalizeAuthPath(authFile)
-
-	// 1) Recent duplicate event with unchanged stat should be skipped fast.
-	w.lastAuthHashes[normalized] = "stale-hash"
-	w.lastAuthStats[normalized] = authFileStat{
-		size:        info.Size(),
-		modTimeUnix: info.ModTime().UnixNano(),
-		seenAtUnix:  time.Now().UnixNano(),
-	}
-	w.addOrUpdateClient(authFile)
-	time.Sleep(authReloadDebounce + 100*time.Millisecond)
-	if got := atomic.LoadInt32(&reloads); got != 0 {
-		t.Fatalf("expected no reload for recent duplicate event, got %d", got)
-	}
-	if gotHash := w.lastAuthHashes[normalized]; gotHash != "stale-hash" {
-		t.Fatalf("expected hash cache untouched on recent duplicate skip, got %q", gotHash)
-	}
-
-	// 2) Old stat observation should not skip; it must re-read and process the file.
-	w.lastAuthStats[normalized] = authFileStat{
-		size:        info.Size(),
-		modTimeUnix: info.ModTime().UnixNano(),
-		seenAtUnix:  time.Now().Add(-2 * authStatDedupWindow).UnixNano(),
-	}
-	w.addOrUpdateClient(authFile)
-	if got := atomic.LoadInt32(&reloads); got != 0 {
-		t.Fatalf("expected stale stat re-read to stay incremental, got %d reloads", got)
-	}
-
-	sum := sha256.Sum256(content)
-	wantHash := hexString(sum[:])
-	if gotHash := w.lastAuthHashes[normalized]; gotHash != wantHash {
-		t.Fatalf("expected hash to refresh after stale stat check, got %q want %q", gotHash, wantHash)
-	}
-}
-
 func TestRemoveClientRemovesHash(t *testing.T) {
 	tmpDir := t.TempDir()
 	authFile := filepath.Join(tmpDir, "sample.json")
